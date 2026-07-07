@@ -1,0 +1,19 @@
+# Watchlist (R2 scope): names harvested intraday every night (yfinance 1-min bars +
+# Alpaca IEX quotes). Names removed from this list stop accruing but keep their history.
+# Starts as the seed universe; the dashboard's stress-tested / paper-traded names go here.
+tickers:
+  - SPY
+  - TLT
+  - HYG
+  - QQQ
+  - IWD
+  - IWM
+  - UUP
+  - DBC
+  - SVXY
+  - SMH
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOGL
+  - AMZN
