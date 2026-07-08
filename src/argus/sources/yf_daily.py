@@ -26,7 +26,7 @@ from argus.ops.ratelimit import RunBudget, TokenBucket, yfinance_bucket
 
 SOURCE = "yfinance"
 DATASET = "yf_daily"
-LOOKBACK_DAYS = 9  # calendar days -> covers T-1 fresh + T-2/T-5 session re-checks
+LOOKBACK_DAYS = 12  # calendar days: T-5 SESSIONS can span 11 days across a holiday week
 
 Downloader = Callable[[str, date, date], Any]  # (ticker, start, end) -> pandas DataFrame
 

@@ -28,7 +28,7 @@ DATASET = "quote_ticks"
 DAILY_DATASET = "alpaca_daily"
 BASE_URL = "https://data.alpaca.markets/v2/stocks"
 LOOKBACK_SESSIONS = 5  # gap recovery after missed nights
-DAILY_LOOKBACK_DAYS = 9  # matches the yfinance revision window
+DAILY_LOOKBACK_DAYS = 12  # matches the yfinance revision window
 PAGE_LIMIT = 10_000
 MAX_PAGES_PER_SESSION = 200  # hard stop ≈ 2M quotes; far above any IEX single-name day
 
@@ -149,7 +149,9 @@ def capture_daily_bars(ctx: JobContext, client: FetchClient | None = None) -> Jo
                 params={
                     "timeframe": "1Day", "adjustment": "raw", "feed": "iex",
                     "start": start.isoformat(),
-                    "end": ctx.trade_date.isoformat(),
+                    # a bare date means midnight UTC; the trade date's own bar is
+                    # timestamped ~04:00Z, so the bound must be the NEXT day
+                    "end": (ctx.trade_date + timedelta(days=1)).isoformat(),
                     "limit": "1000",
                 },
             ).json()
