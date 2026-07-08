@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import duckdb
+
 from argus import db, logging_setup
 from argus.core import calendars
 from argus.core.clocks import utc_now
@@ -30,7 +32,16 @@ def run_nightly(
     log = logging_setup.configure(settings)
     settings.ensure_dirs()
     now = now or utc_now()
-    conn = db.open_migrated(settings.db_path)
+    try:
+        conn = db.open_migrated(settings.db_path)
+    except duckdb.IOException as exc:
+        # DuckDB is single-writer: the nightly and catch-up tasks are separate
+        # scheduler entries and can fire concurrently. The other instance is
+        # doing the work — bow out quietly instead of crashing.
+        if "lock" in str(exc).lower():
+            log.warning("another_argus_instance_holds_the_db", detail=str(exc))
+            return 0
+        raise
     try:
         calendars.refresh_market_sessions(
             conn,

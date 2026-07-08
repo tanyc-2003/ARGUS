@@ -66,3 +66,19 @@ def test_unknown_only_job_rejected(settings) -> None:
 
     with pytest.raises(SystemExit):
         run_nightly(settings, now=NOW, registry=[JobSpec("t_ok", _ok)], only=["nope"])
+
+
+def test_concurrent_instance_bows_out_gracefully(settings) -> None:
+    # hold the single-writer lock like a concurrently-fired runner would
+    settings.ensure_dirs()
+    holder = db_module.connect(settings.db_path)
+    try:
+        assert run_nightly(settings, now=NOW, registry=[JobSpec("t_ok", _ok)]) == 0
+    finally:
+        holder.close()
+    # nothing ran and nothing crashed; a later run does the work
+    assert run_nightly(settings, now=NOW, registry=[JobSpec("t_ok", _ok)]) == 0
+    conn = db_module.open_migrated(settings.db_path)
+    n = conn.execute("SELECT COUNT(*) FROM job_runs WHERE job_name='t_ok'").fetchone()[0]
+    conn.close()
+    assert n == 1
