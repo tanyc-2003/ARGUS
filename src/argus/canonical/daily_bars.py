@@ -7,6 +7,7 @@ better than it is (v4 Principle 9).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -53,8 +54,13 @@ def upsert_bars(
     source_set: str = "stooq",
     grade: str = "degraded",
     single_source: bool = True,
+    revision_knowledge: datetime | None = None,
 ) -> dict[str, int]:
-    """SCD-2 upsert of raw bars (ticker, bar_date, open..volume) into bars_daily."""
+    """SCD-2 upsert of raw bars (ticker, bar_date, open..volume) into bars_daily.
+
+    revision_knowledge (detection time) must be passed by incremental feeds so
+    corrections become knowable when detected, not backdated to the bar date.
+    """
     if raw_bars.is_empty():
         return {"revised": 0, "inserted": 0, "unchanged": 0}
     incoming = raw_bars.select("ticker", "bar_date", "open", "high", "low", "close", "volume")
@@ -64,4 +70,37 @@ def upsert_bars(
         pl.lit(single_source).alias("single_source"),
     )
     incoming = bar_knowledge_time(row_hashes(incoming))
-    return scd2.upsert(conn, "bars_daily", KEY_COLS, VALUE_COLS, incoming)
+    return scd2.upsert(
+        conn, "bars_daily", KEY_COLS, VALUE_COLS, incoming,
+        revision_knowledge=revision_knowledge,
+    )
+
+
+def keys_owned_by_other_sources(
+    conn: duckdb.DuckDBPyConnection, source: str
+) -> pl.DataFrame:
+    """(ticker, bar_date) keys whose CURRENT version belongs to a different source.
+
+    Until M3 voting exists, an incremental feed must not fight the bootstrap
+    spine over the same keys (vendor flip-flop would open a junk revision every
+    night). Incremental builders anti-join against this set.
+    """
+    return conn.execute(
+        "SELECT ticker, bar_date FROM bars_daily WHERE is_current AND source_set <> ?",
+        [source],
+    ).pl()
+
+
+def bars_asof(
+    conn: duckdb.DuckDBPyConnection, ticker: str, bar_date: object, as_of: datetime
+) -> tuple[float, int] | None:
+    """(close, revision_seq) as believed at knowledge time `as_of` — the time machine."""
+    row = conn.execute(
+        """
+        SELECT close, revision_seq FROM bars_daily
+        WHERE ticker = ? AND bar_date = ?
+          AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)
+        """,
+        [ticker.upper(), bar_date, as_of, as_of],
+    ).fetchone()
+    return (float(row[0]), int(row[1])) if row else None

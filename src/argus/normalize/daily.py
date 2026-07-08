@@ -50,6 +50,61 @@ def parse_stooq_csv(text: str, ticker: str) -> pl.DataFrame:
     return out.sort("bar_date")
 
 
+def parse_yf_daily_parquet(payload: bytes, ticker: str) -> pl.DataFrame:
+    """Landed yfinance daily parquet -> (ticker, bar_date, o/h/l/c, volume, adj_close).
+
+    yfinance sometimes returns MultiIndex columns even for one ticker; the
+    capture flattens them to 'Open_AAPL' style, so match by exact name OR
+    prefix. Prices are split-adjusted, dividend-unadjusted (auto_adjust=False);
+    adj_close rides along for M3's implied-dividend cross-check.
+    """
+    import io as _io
+
+    try:
+        df = pl.read_parquet(_io.BytesIO(payload))
+    except Exception as exc:
+        raise SchemaDrift(
+            f"yfinance:{ticker} daily payload unreadable: {exc}", source="yfinance"
+        ) from exc
+
+    def find(name: str) -> str | None:
+        for c in df.columns:
+            if c == name or c.startswith(f"{name}_"):
+                return c
+        return None
+
+    cols = {n: find(n) for n in ["Date", "Open", "High", "Low", "Close", "Volume", "Adj Close"]}
+    missing = [n for n in ["Date", "Open", "High", "Low", "Close"] if cols[n] is None]
+    if missing:
+        raise SchemaDrift(
+            f"yfinance:{ticker} daily payload missing {missing} (got {df.columns})",
+            source="yfinance",
+        )
+    date_c, open_c, high_c, low_c, close_c = (
+        cols["Date"], cols["Open"], cols["High"], cols["Low"], cols["Close"],
+    )
+    assert date_c and open_c and high_c and low_c and close_c  # narrowed by the check above
+    volume_c, adj_c = cols["Volume"], cols["Adj Close"]
+    out = df.select(
+        pl.lit(ticker.upper()).alias("ticker"),
+        pl.col(date_c).cast(pl.Date).alias("bar_date"),
+        pl.col(open_c).cast(pl.Float64).alias("open"),
+        pl.col(high_c).cast(pl.Float64).alias("high"),
+        pl.col(low_c).cast(pl.Float64).alias("low"),
+        pl.col(close_c).cast(pl.Float64).alias("close"),
+        (
+            pl.col(volume_c).cast(pl.Float64) if volume_c else pl.lit(None, dtype=pl.Float64)
+        ).alias("volume"),
+        (
+            pl.col(adj_c).cast(pl.Float64) if adj_c else pl.lit(None, dtype=pl.Float64)
+        ).alias("adj_close"),
+    ).drop_nulls(subset=["bar_date", "close"])
+    if out.is_empty():
+        raise SchemaDrift(f"yfinance:{ticker} daily payload parsed to zero rows",
+                          source="yfinance")
+    return out.sort("bar_date")
+
+
 def _with_reversal_factor(bars: pl.DataFrame, splits: pl.DataFrame) -> pl.DataFrame:
     """Attach reversal_factor(D) = PROD{ ratio : ex_date > D } per (ticker, bar_date).
 

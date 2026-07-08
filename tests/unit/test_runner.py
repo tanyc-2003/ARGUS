@@ -53,6 +53,16 @@ def test_double_fire_is_harmless(settings) -> None:
     assert n == 1  # second fire skipped, not re-recorded
 
 
+def test_always_jobs_rerun_on_double_fire(settings) -> None:
+    registry = [JobSpec("t_always", _ok, always=True)]
+    run_nightly(settings, now=NOW, registry=registry)
+    run_nightly(settings, now=NOW, registry=registry)
+    conn = db_module.open_migrated(settings.db_path)
+    n = conn.execute("SELECT COUNT(*) FROM job_runs WHERE job_name='t_always'").fetchone()[0]
+    conn.close()
+    assert n == 2  # projections refresh every run (publish must see late-built rows)
+
+
 def test_market_sessions_refreshed(settings) -> None:
     run_nightly(settings, now=NOW, registry=[])
     conn = db_module.open_migrated(settings.db_path)

@@ -13,7 +13,7 @@ every gap measured and disclosed instead of papered over.
 |---|---|
 | M0 — ops backbone + day-1 capture (symbol dirs, yfinance 1-min, Alpaca IEX quotes) | ✅ PR #1 |
 | M1 — daily spine + factor layer + `vw_mad_daily_ohlcv` | ✅ PR #2 |
-| M2 — nightly incrementals + revision detection (SCD-2) | pending |
+| M2 — nightly incrementals + revision detection (SCD-2) | ✅ PR #3 |
 | M3 — cross-source voting + replay | pending |
 | M4 — survivorship (graveyard, reasons, coverage) | pending |
 | M5 — intraday serving (`vw_mad_intraday`) | pending |
