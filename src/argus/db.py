@@ -79,7 +79,99 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (exchange, session_date)
     );
     """,
+    # v2 — M1 canonical layer (SCD-2 columns on every canonical table)
+    """
+    CREATE TABLE IF NOT EXISTS bars_daily (
+        ticker        VARCHAR NOT NULL,
+        bar_date      DATE NOT NULL,
+        open          DOUBLE,
+        high          DOUBLE,
+        low           DOUBLE,
+        close         DOUBLE,          -- RAW price (post split-reversal)
+        volume        DOUBLE,
+        source_set    VARCHAR NOT NULL,
+        grade         VARCHAR NOT NULL,          -- good | degraded | quarantined
+        single_source BOOLEAN NOT NULL,
+        payload_hash  VARCHAR NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        valid_from    TIMESTAMPTZ NOT NULL,
+        valid_to      TIMESTAMPTZ,
+        is_current    BOOLEAN NOT NULL,
+        revision_seq  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS corporate_actions (
+        ticker        VARCHAR NOT NULL,
+        action_type   VARCHAR NOT NULL,          -- split | dividend
+        ex_date       DATE NOT NULL,
+        ratio         DOUBLE,                    -- splits: to/from
+        cash_amount   DOUBLE,                    -- dividends
+        declared_date DATE,
+        confidence    VARCHAR NOT NULL,          -- confirmed | single_source | inferred
+        source_set    VARCHAR NOT NULL,
+        payload_hash  VARCHAR NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        valid_from    TIMESTAMPTZ NOT NULL,
+        valid_to      TIMESTAMPTZ,
+        is_current    BOOLEAN NOT NULL,
+        revision_seq  INTEGER NOT NULL
+    );
+    """,
 ]
+
+# Views are (re)created on every migrate() — idempotent, and they evolve without
+# migration ceremony. The serving view IS the PIT guarantee: cum(D) multiplies
+# only factors with ex_date <= D whose knowledge (in exchange-local time) had
+# arrived by end of day D. exp(sum(ln)) stands in for a PRODUCT aggregate.
+VIEWS: str = """
+CREATE OR REPLACE VIEW vw_adjustment_factors AS
+SELECT ticker, ex_date, 'split' AS factor_type, ratio AS factor, knowledge_time
+FROM corporate_actions
+WHERE is_current AND action_type = 'split' AND ratio IS NOT NULL AND ratio > 0
+UNION ALL
+SELECT ca.ticker, ca.ex_date, 'dividend' AS factor_type,
+       prev.close / (prev.close - ca.cash_amount) AS factor,
+       ca.knowledge_time
+FROM corporate_actions ca
+JOIN LATERAL (
+    SELECT b.close
+    FROM bars_daily b
+    WHERE b.ticker = ca.ticker AND b.bar_date < ca.ex_date
+      AND b.is_current AND b.grade <> 'quarantined'
+    ORDER BY b.bar_date DESC
+    LIMIT 1
+) prev ON TRUE
+WHERE ca.is_current AND ca.action_type = 'dividend'
+  AND ca.cash_amount IS NOT NULL AND ca.cash_amount > 0
+  AND prev.close > ca.cash_amount;
+
+CREATE OR REPLACE VIEW vw_mad_daily_ohlcv AS
+WITH b AS (
+    SELECT * FROM bars_daily WHERE is_current AND grade <> 'quarantined'
+),
+c AS (
+    SELECT b.ticker, b.bar_date,
+        COALESCE(EXP(SUM(LN(f.factor)) FILTER (
+            WHERE f.ex_date <= b.bar_date
+              AND CAST(timezone('America/New_York', f.knowledge_time) AS DATE) <= b.bar_date
+        )), 1.0) AS cum,
+        COALESCE(EXP(SUM(LN(f.factor)) FILTER (
+            WHERE f.factor_type = 'split' AND f.ex_date <= b.bar_date
+              AND CAST(timezone('America/New_York', f.knowledge_time) AS DATE) <= b.bar_date
+        )), 1.0) AS split_cum
+    FROM b LEFT JOIN vw_adjustment_factors f ON f.ticker = b.ticker
+    GROUP BY b.ticker, b.bar_date
+)
+SELECT
+    CAST(b.ticker AS VARCHAR)               AS ticker,
+    CAST(b.bar_date AS DATE)                AS effective_date,
+    CAST(b.open * c.cum AS DOUBLE)          AS open,
+    CAST(b.high * c.cum AS DOUBLE)          AS high,
+    CAST(b.low * c.cum AS DOUBLE)           AS low,
+    CAST(b.close * c.cum AS DOUBLE)         AS close,
+    CAST(b.volume / c.split_cum AS DOUBLE)  AS volume
+FROM b JOIN c ON b.ticker = c.ticker AND b.bar_date = c.bar_date;
+"""
 
 
 def connect(db_path: Path) -> duckdb.DuckDBPyConnection:
@@ -102,6 +194,7 @@ def migrate(conn: duckdb.DuckDBPyConnection) -> int:
                 "INSERT INTO schema_migrations VALUES (?, ?)",
                 [version, utc_now()],
             )
+    conn.execute(VIEWS)
     return len(MIGRATIONS)
 
 

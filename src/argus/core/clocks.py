@@ -1,14 +1,19 @@
 """The two clocks (v4 kept-principles): `knowledge_time` vs `written_at`.
 
+`knowledge_time` models when the WORLD could know a fact; `written_at` records
+when ARGUS learned it. Only knowledge_time participates in as-of logic:
+
+  * fresh observations (nightly pulls)  -> pull time           (pull_knowledge_time)
+  * backfilled world facts (bootstrap bars, historical splits/dividends)
+                                        -> the fact's own date (asof_knowledge_time) —
+       a daily bar is knowable at its own close; a corporate action by its
+       ex-date. This is what makes historical as-of adjustment reconstructable
+       and maps directly onto the dashboard's `knowledge_date = bar close date`.
+  * corrections/revisions (M2+)         -> detection time      (pull_knowledge_time) —
+       as-of queries before the detection instant return the pre-revision value.
+
 Every module that needs "now" goes through this file — a source-tree test
-enforces that nothing else calls datetime.now()/utcnow() directly. That keeps
-knowledge-stamping rules in one auditable place:
-
-  * nightly pulls        -> knowledge_time = pull time            (pull_knowledge_time)
-  * bulk-file bootstraps -> knowledge_time = file's as-of date    (asof_knowledge_time)
-  * revision detection   -> knowledge_time = detection time       (pull_knowledge_time)
-
-`written_at` is always wall clock and never participates in as-of logic.
+enforces that nothing else calls datetime.now()/utcnow() directly.
 """
 
 from __future__ import annotations
