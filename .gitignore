@@ -1,0 +1,24 @@
+# secrets & local env
+.env
+
+# data artifacts must never live in the repo (see settings.py OneDrive guard)
+*.duckdb
+*.duckdb.wal
+data/
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage

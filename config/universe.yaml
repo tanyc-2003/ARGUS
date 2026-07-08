@@ -1,0 +1,20 @@
+# Daily-spine universe (R1). Grows toward ~100+ names over milestones.
+# role: factor_etf entries are the dashboard's 10 macro-factor proxies and must never be removed.
+tickers:
+  # 10 factor ETFs (dashboard MACRO_FACTOR_PROXIES - fixed set)
+  - {ticker: SPY, role: factor_etf}
+  - {ticker: TLT, role: factor_etf}
+  - {ticker: HYG, role: factor_etf}
+  - {ticker: QQQ, role: factor_etf}
+  - {ticker: IWD, role: factor_etf}
+  - {ticker: IWM, role: factor_etf}
+  - {ticker: UUP, role: factor_etf}
+  - {ticker: DBC, role: factor_etf}
+  - {ticker: SVXY, role: factor_etf}
+  - {ticker: SMH, role: factor_etf}
+  # seed mega-caps (mirrors the dashboard's current default universe)
+  - {ticker: AAPL, role: seed}
+  - {ticker: MSFT, role: seed}
+  - {ticker: NVDA, role: seed}
+  - {ticker: GOOGL, role: seed}
+  - {ticker: AMZN, role: seed}
