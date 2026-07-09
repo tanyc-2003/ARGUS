@@ -11,10 +11,10 @@ every gap measured and disclosed instead of papered over.
 
 | Milestone | State |
 |---|---|
-| M0 — ops backbone + day-1 capture (symbol dirs, yfinance 1-min, Alpaca IEX quotes) | ✅ this PR |
-| M1 — daily spine + factor layer + `vw_mad_daily_ohlcv` | pending |
-| M2 — nightly incrementals + revision detection (SCD-2) | pending |
-| M3 — cross-source voting + replay | pending |
+| M0 — ops backbone + day-1 capture (symbol dirs, yfinance 1-min, Alpaca IEX quotes) | ✅ PR #1 |
+| M1 — daily spine + factor layer + `vw_mad_daily_ohlcv` | ✅ PR #2 |
+| M2 — nightly incrementals + revision detection (SCD-2) | ✅ PR #3 |
+| M3 — cross-source voting + replay | ✅ PR #4 |
 | M4 — survivorship (graveyard, reasons, coverage) | pending |
 | M5 — intraday serving (`vw_mad_intraday`) | pending |
 | M6 — parity sampling, gap ledger, chaos drills | pending |
@@ -32,7 +32,11 @@ copy .env.example .env     # fill in Alpaca/Polygon keys; blank keys = jobs skip
 # 3. sanity check + first run
 C:\argus-data\venv\Scripts\argus check
 C:\argus-data\venv\Scripts\argus init-db
+C:\argus-data\venv\Scripts\argus bootstrap   # one-off daily spine (requires POLYGON key)
 C:\argus-data\venv\Scripts\argus nightly
+
+# inspect PIT correctness for any (ticker, date):
+C:\argus-data\venv\Scripts\argus verify-pit --ticker AAPL --date 2020-08-28
 
 # 4. schedule (fires daily 23:45 local + at logon; idempotent per trade date)
 .\scripts\register_scheduled_tasks.ps1 -ArgusExe C:\argus-data\venv\Scripts\argus.exe

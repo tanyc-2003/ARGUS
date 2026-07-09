@@ -53,6 +53,85 @@ def jobs_list() -> None:
 
 
 @app.command()
+def bootstrap(force: bool = typer.Option(False, "--force")) -> None:
+    """One-off daily-spine bootstrap: Polygon CAs -> Stooq history -> serve.
+
+    Requires ARGUS_POLYGON_API_KEY: bootstrapping bars without the split feed
+    would serve split-adjusted prices as raw — refused outright.
+    """
+    from argus.orchestration.nightly import bootstrap_registry
+    from argus.orchestration.runner import run_nightly
+
+    settings = load_settings()
+    if not settings.polygon_api_key:
+        typer.echo("refusing to bootstrap: ARGUS_POLYGON_API_KEY is not set (see .env.example).")
+        typer.echo("Without the split feed the reversal cannot run and the served")
+        typer.echo("prices would silently bake in look-ahead (v4 §5.1).")
+        raise SystemExit(2)
+    raise SystemExit(run_nightly(settings, force=force, registry=bootstrap_registry()))
+
+
+@app.command()
+def rebuild(yes: bool = typer.Option(False, "--yes", help="confirm the canonical wipe")) -> None:
+    """Rebuild canonical DuckDB state from the L2 event store (deterministic replay).
+
+    The Parquet event store is the system of record; this wipes bars_daily,
+    corporate_actions and vote_results, replays L2, re-votes, and republishes.
+    """
+    if not yes:
+        typer.echo("This wipes the canonical tables and replays them from L2 Parquet.")
+        typer.echo("The event store is untouched. Re-run with --yes to proceed.")
+        raise SystemExit(2)
+
+    from argus.core import calendars
+    from argus.core.clocks import utc_now
+    from argus.orchestration.rebuild import rebuild_canonical
+
+    settings = load_settings()
+    trade_date = calendars.latest_completed_session(utc_now())
+    if trade_date is None:
+        typer.echo("no completed session found — aborting")
+        raise SystemExit(1)
+    conn = db_module.open_migrated(settings.db_path)
+    try:
+        summary = rebuild_canonical(settings, conn, trade_date)
+    finally:
+        conn.close()
+    for k, v in summary.items():
+        typer.echo(f"{k}: {v}")
+
+
+@app.command("verify-pit")
+def verify_pit(
+    ticker: str = typer.Option(..., "--ticker"),
+    on_date: str = typer.Option(..., "--date", help="YYYY-MM-DD"),
+) -> None:
+    """Show exactly how the served value for (ticker, date) was built — factor by factor."""
+    from datetime import date as date_type
+
+    from argus.factors.adjustment import pit_report
+
+    settings = load_settings()
+    conn = db_module.open_migrated(settings.db_path)
+    report = pit_report(conn, ticker, date_type.fromisoformat(on_date))
+    conn.close()
+
+    typer.echo(f"{report.ticker} @ {report.bar_date}")
+    typer.echo(f"  raw close      : {report.raw_close}")
+    for f in report.factors:
+        mark = "APPLIED" if f.applied else "excluded"
+        typer.echo(
+            f"  factor {f.factor_type:<9} ex={f.ex_date} x{f.factor:.6f} "
+            f"knowledge={f.knowledge_time.isoformat()} [{mark}]"
+        )
+    typer.echo(f"  cum factor     : {report.cum_factor:.6f}")
+    typer.echo(f"  adjusted close : {report.adjusted_close}")
+    typer.echo(f"  no look-ahead  : {report.no_lookahead}")
+    if not report.no_lookahead:
+        raise SystemExit(1)
+
+
+@app.command()
 def status(limit: int = typer.Option(20, "--limit")) -> None:
     """Recent job runs and open DLQ depth."""
     from argus.ops import dlq

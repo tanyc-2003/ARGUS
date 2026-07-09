@@ -66,7 +66,7 @@ def run_nightly(
         ctx = JobContext(settings=settings, conn=conn, trade_date=trade_date, log=log)
         statuses: dict[str, str] = {}
         for spec in jobs:
-            statuses[spec.name] = run_job(ctx, spec.name, spec.fn, force=force)
+            statuses[spec.name] = run_job(ctx, spec.name, spec.fn, force=force or spec.always)
 
         failed = [name for name, s in statuses.items() if s == "failed"]
         log.info("nightly_done", trade_date=str(trade_date), statuses=statuses)
