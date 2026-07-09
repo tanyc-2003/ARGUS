@@ -60,7 +60,9 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." makes `tests.*` importable so cross-module fixture imports work under
+# bare `pytest` (CI) exactly like `python -m pytest` (which adds cwd itself)
+pythonpath = ["src", "."]
 addopts = "--disable-socket"
 markers = ["live: hits real APIs (excluded by default; run explicitly with -m live --allow-hosts=...)"]
 filterwarnings = ["ignore::DeprecationWarning"]
