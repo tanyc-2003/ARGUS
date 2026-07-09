@@ -10,7 +10,7 @@ import duckdb
 
 from argus.core.clocks import pull_knowledge_time
 from argus.landing import store
-from argus.orchestration.build_jobs import build_actions, build_daily_bars
+from argus.orchestration.build_jobs import build_actions, build_daily_bars, vote_and_seal
 from argus.serving import contracts
 from argus.serving.publish import publish
 
@@ -51,11 +51,14 @@ def test_full_slice(ctx) -> None:
     _land(ctx, "stooq_daily", "AAPL", STOOQ_AAPL.encode(), "csv")
     _land(ctx, "stooq_daily", "SPY", STOOQ_SPY.encode(), "csv")
 
-    # 2. build: actions first (the reversal consumes them), then bars, then publish
+    # 2. build: actions first (the reversal consumes them), bars -> events,
+    #    vote seals canonical, then publish
     r1 = build_actions(ctx)
     assert r1.rows_out == 1  # one split canonicalized
     r2 = build_daily_bars(ctx)
-    assert r2.rows_out == 5  # 3 AAPL + 2 SPY bars
+    assert r2.rows_out == 5  # 3 AAPL + 2 SPY event bars
+    seal = vote_and_seal(ctx)
+    assert seal.rows_out == 5  # stooq-only: admitted single_source/degraded
     r3 = publish(ctx)
     assert r3.rows_out == 5
 
@@ -82,9 +85,11 @@ def test_full_slice(ctx) -> None:
     assert abs(by_date[date(2020, 8, 28)]["volume"] - 187629920.0 / 4) < 1e-3
     assert abs(by_date[date(2020, 8, 31)]["volume"] - 225702700.0 / 4) < 1e-3
 
-    # 6. re-running the build jobs is a no-op (SCD-2 idempotency), publish identical
+    # 6. re-running is harmless: actions no-op (SCD-2); bars re-append events
+    #    (deduped at the vote by latest-per-source), the vote itself no-ops
     assert build_actions(ctx).rows_out == 0
-    assert build_daily_bars(ctx).rows_out == 0
+    build_daily_bars(ctx)
+    assert vote_and_seal(ctx).rows_out == 0
     assert publish(ctx).rows_out == 5
 
 
@@ -97,6 +102,7 @@ def test_pit_report_on_the_slice(ctx) -> None:
     _land(ctx, "stooq_daily", "SPY", STOOQ_SPY.encode(), "csv")
     build_actions(ctx)
     build_daily_bars(ctx)
+    vote_and_seal(ctx)
 
     from argus.factors.adjustment import pit_report
 

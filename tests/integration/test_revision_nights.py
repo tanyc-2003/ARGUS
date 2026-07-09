@@ -1,18 +1,23 @@
-"""Two simulated nights through the real build jobs: fresh bars on night one,
-a vendor rewrite detected on night two -> SCD-2 revision + correct time travel.
+"""Two simulated nights through the real pipeline (events -> vote -> canonical):
+fresh bars, a vendor rewrite detected on night two, grade upgrades, conflicts.
 """
 
 import io
-from datetime import UTC, date, datetime
+from datetime import date
 
 import polars as pl
 import structlog
 
 from argus.canonical import daily_bars
-from argus.core.clocks import pull_knowledge_time
+from argus.core.clocks import pull_knowledge_time, utc_now
 from argus.landing import store
+from argus.ops import dlq
 from argus.ops.jobs import JobContext
-from argus.orchestration.build_jobs import build_daily_incrementals
+from argus.orchestration.build_jobs import (
+    build_daily_bars,
+    build_daily_incrementals,
+    vote_and_seal,
+)
 
 NIGHT1 = date(2026, 7, 6)  # Monday
 NIGHT2 = date(2026, 7, 7)  # Tuesday
@@ -45,6 +50,19 @@ def _land_yf(ctx: JobContext, ticker: str, closes: dict[date, float]) -> None:
     )
 
 
+def _land_stooq(ctx: JobContext, ticker: str, closes: dict[date, float]) -> None:
+    lines = ["Date,Open,High,Low,Close,Volume"] + [
+        f"{d},{c},{c * 1.01:.4f},{c * 0.99:.4f},{c},1000000" for d, c in closes.items()
+    ]
+    store.write(
+        ctx.conn, ctx.settings,
+        dataset="stooq_daily", source="stooq",
+        request_key=f"{ticker}:{ctx.trade_date.isoformat()}",
+        payload="\n".join(lines).encode(), ext="csv", partition_date=ctx.trade_date,
+        knowledge_time=pull_knowledge_time(),
+    )
+
+
 def _ctx_for(settings, conn, trade_date: date) -> JobContext:
     return JobContext(settings=settings, conn=conn, trade_date=trade_date,
                       log=structlog.get_logger("argus-test"))
@@ -53,17 +71,18 @@ def _ctx_for(settings, conn, trade_date: date) -> JobContext:
 def test_two_night_revision_lifecycle(settings, conn) -> None:
     d1, d2 = date(2026, 7, 2), date(2026, 7, 6)
 
-    # ---- night one: fresh observations
     ctx1 = _ctx_for(settings, conn, NIGHT1)
     _land_yf(ctx1, "AAPL", {d1: 210.00, d2: 212.50})
-    r1 = build_daily_incrementals(ctx1)
-    assert r1.rows_out == 2
+    build_daily_incrementals(ctx1)
+    seal1 = vote_and_seal(ctx1)
+    assert seal1.rows_out == 2
+    t_between = utc_now()
 
-    # ---- night two: vendor silently rewrote d1
     ctx2 = _ctx_for(settings, conn, NIGHT2)
     _land_yf(ctx2, "AAPL", {d1: 209.40, d2: 212.50})
-    r2 = build_daily_incrementals(ctx2)
-    assert "'revised': 1" in r2.detail and "'unchanged': 1" in r2.detail
+    build_daily_incrementals(ctx2)
+    seal2 = vote_and_seal(ctx2)
+    assert seal2.rows_out == 1  # only the rewritten bar revises
 
     versions = conn.execute(
         """
@@ -74,70 +93,54 @@ def test_two_night_revision_lifecycle(settings, conn) -> None:
     ).fetchall()
     assert [(v[0], v[1], v[2]) for v in versions] == [(1, False, 210.00), (2, True, 209.40)]
 
-    # time travel: before night two's detection we still believed 210.00
-    believed_night1 = daily_bars.bars_asof(
-        conn, "AAPL", d1, datetime(2026, 7, 7, 6, 0, tzinfo=UTC)
-    )
-    assert believed_night1 is not None and believed_night1[0] == 210.00
-
-    # d2 was untouched: still a single version
-    n_d2 = conn.execute(
-        "SELECT COUNT(*) FROM bars_daily WHERE ticker='AAPL' AND bar_date=?", [d2]
-    ).fetchone()[0]
-    assert n_d2 == 1
+    # time travel: between the nights we still believed the original value
+    believed = daily_bars.bars_asof(conn, "AAPL", d1, t_between)
+    assert believed is not None and believed[0] == 210.00
+    now_believed = daily_bars.bars_asof(conn, "AAPL", d1, utc_now())
+    assert now_believed is not None and now_believed[0] == 209.40
 
 
-def test_yf_never_revises_the_stooq_spine(settings, conn) -> None:
+def test_second_source_upgrades_grade(settings, conn) -> None:
     d = date(2026, 7, 2)
-    # bootstrap owns this key with a slightly different vendor value
-    daily_bars.upsert_bars(
-        conn,
-        pl.DataFrame(
-            {"ticker": ["AAPL"], "bar_date": [d], "open": [210.1], "high": [210.1],
-             "low": [210.1], "close": [210.1], "volume": [1e6]}
-        ),
-        source_set="stooq",
-    )
-    ctx = _ctx_for(settings, conn, NIGHT1)
-    _land_yf(ctx, "AAPL", {d: 210.0})
-    result = build_daily_incrementals(ctx)
-    assert "foreign_keys_skipped=1" in result.detail
-
-    row = conn.execute(
-        "SELECT source_set, close, revision_seq FROM bars_daily WHERE is_current"
+    ctx1 = _ctx_for(settings, conn, NIGHT1)
+    _land_yf(ctx1, "AAPL", {d: 210.0})
+    build_daily_incrementals(ctx1)
+    vote_and_seal(ctx1)
+    first = conn.execute(
+        "SELECT grade, single_source FROM bars_daily WHERE is_current"
     ).fetchone()
-    assert row == ("stooq", 210.1, 1)  # spine intact, no flip-flop revision
+    assert first == ("degraded", True)
 
-    # the yfinance observation still exists in L2 for M3's voting
-    from argus.events import schemas
-    from argus.events import store as event_store
+    ctx2 = _ctx_for(settings, conn, NIGHT2)
+    _land_stooq(ctx2, "AAPL", {d: 210.05})  # within ±0.1% -> agreement
+    build_daily_bars(ctx2)
+    vote_and_seal(ctx2)
+    upgraded = conn.execute(
+        "SELECT grade, single_source, revision_seq FROM bars_daily WHERE is_current"
+    ).fetchone()
+    assert upgraded == ("good", False, 2)  # belief improved -> revision, not overwrite
 
-    events = event_store.scan(settings, schemas.BAR_EVENTS).collect()
-    assert events.filter(pl.col("source") == "yfinance").height == 1
 
-
-def test_stooq_bootstrap_never_stomps_yf_owned_keys(settings, conn) -> None:
-    """The ownership rule holds in BOTH directions: a late bootstrap must not
-    revise keys the incremental feed already owns."""
-    from argus.orchestration.build_jobs import build_daily_bars
-
+def test_vendor_conflict_quarantines_and_dead_letters(settings, conn) -> None:
     d = date(2026, 7, 2)
     ctx = _ctx_for(settings, conn, NIGHT1)
     _land_yf(ctx, "AAPL", {d: 210.0})
-    build_daily_incrementals(ctx)  # yfinance now owns (AAPL, d)
+    _land_stooq(ctx, "AAPL", {d: 215.0})  # ~2.4% apart: no agreeing pair
+    build_daily_incrementals(ctx)
+    build_daily_bars(ctx)
+    vote_and_seal(ctx)
 
-    stooq_csv = f"Date,Open,High,Low,Close,Volume\n{d},209.9,210.5,209.0,209.9,1000000\n"
-    store.write(
-        ctx.conn, ctx.settings,
-        dataset="stooq_daily", source="stooq",
-        request_key=f"AAPL:{ctx.trade_date.isoformat()}",
-        payload=stooq_csv.encode(), ext="csv", partition_date=ctx.trade_date,
-        knowledge_time=pull_knowledge_time(),
-    )
-    result = build_daily_bars(ctx)
-    assert "foreign_keys_skipped=1" in result.detail
+    row = conn.execute("SELECT grade FROM bars_daily WHERE is_current").fetchone()
+    assert row[0] == "quarantined"
+    served = conn.execute("SELECT COUNT(*) FROM vw_mad_daily_ohlcv").fetchone()[0]
+    assert served == 0  # quarantined rows never reach the consumer
+    assert dlq.open_depth(conn) == 1
 
-    row = conn.execute(
-        "SELECT source_set, close, revision_seq FROM bars_daily WHERE is_current"
+    # a second seal must not spam the DLQ with the same conflict
+    vote_and_seal(ctx)
+    assert dlq.open_depth(conn) == 1
+
+    verdict = conn.execute(
+        "SELECT verdict, n_sources FROM vote_results WHERE ticker='AAPL'"
     ).fetchone()
-    assert row == ("yfinance", 210.0, 1)  # untouched
+    assert verdict == ("conflict", 2)
