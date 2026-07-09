@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from argus.ops.jobs import JobFn
-from argus.orchestration import build_jobs
+from argus.orchestration import build_jobs, universe_jobs
 from argus.serving import publish
 from argus.sources import alpaca, polygon_ref, stooq, symbol_dirs, yf_daily, yf_minute
 
@@ -32,9 +32,11 @@ def build_registry() -> list[JobSpec]:
         JobSpec("j04_yf_minute", yf_minute.capture),
         JobSpec("j05_alpaca_quotes", alpaca.capture),
         JobSpec("j06_polygon_ca", polygon_ref.capture_corporate_actions),
+        JobSpec("j07_polygon_delisted", polygon_ref.capture_delisted),
         JobSpec("j08_build_actions", build_jobs.build_actions),
         JobSpec("j09_build_daily", build_jobs.build_daily_incrementals),
         JobSpec("j10_vote_seal", build_jobs.vote_and_seal, always=True),
+        JobSpec("j11_universe_seal", universe_jobs.universe_seal, always=True),
         JobSpec("j12_publish", publish.publish, always=True),
     ]
 

@@ -14,6 +14,8 @@ import duckdb
 import polars as pl
 
 DAILY_OHLCV = "vw_mad_daily_ohlcv"
+DELISTED = "vw_mad_delisted"
+COVERAGE = "vw_mad_coverage"
 
 PolarsType = pl.DataType | type[pl.DataType]
 
@@ -25,6 +27,22 @@ DAILY_OHLCV_SCHEMA: dict[str, PolarsType] = {
     "low": pl.Float64,
     "close": pl.Float64,
     "volume": pl.Float64,
+}
+
+DELISTED_SCHEMA: dict[str, PolarsType] = {
+    "ticker": pl.Utf8,
+    "termination_date": pl.Date,
+    "termination_reason": pl.Utf8,
+    "terminal_return": pl.Float64,
+}
+
+# the dashboard's delisted_tickers DDL enforces this CHECK constraint —
+# a value outside this set must fail inside ARGUS, never at the consumer
+TERMINATION_REASONS = frozenset({"merger", "bankruptcy", "acquisition", "voluntary", "unknown"})
+
+COVERAGE_SCHEMA: dict[str, PolarsType] = {
+    "audit_window": pl.Utf8,
+    "coverage": pl.Float64,
 }
 
 
@@ -67,5 +85,56 @@ def assert_daily_ohlcv(db_path: Path) -> int:
         if bad:
             raise ContractViolation(f"{DAILY_OHLCV}: {bad} rows with null keys/prices or high<low")
         return int(total)
+    finally:
+        con.close()
+
+
+def assert_delisted(db_path: Path) -> int:
+    """vw_mad_delisted: exact schema, unique (ticker, termination_date), enum reasons."""
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        sample = con.execute(f"SELECT * FROM {DELISTED} LIMIT 10000").pl()
+        got = dict(sample.schema)
+        if got != DELISTED_SCHEMA:
+            raise ContractViolation(
+                f"{DELISTED} schema drift:\n  got      {got}\n  expected {DELISTED_SCHEMA}"
+            )
+        counts = con.execute(
+            f"""
+            SELECT COUNT(*), COUNT(DISTINCT (ticker, termination_date)),
+                   COUNT(*) FILTER (WHERE termination_reason NOT IN
+                       ('merger', 'bankruptcy', 'acquisition', 'voluntary', 'unknown'))
+            FROM {DELISTED}
+            """
+        ).fetchone()
+        assert counts is not None
+        total, distinct, bad_reason = counts
+        if total != distinct:
+            raise ContractViolation(f"{DELISTED}: (ticker, termination_date) not unique")
+        if bad_reason:
+            raise ContractViolation(
+                f"{DELISTED}: {bad_reason} rows outside the dashboard's reason CHECK set"
+            )
+        return int(total)
+    finally:
+        con.close()
+
+
+def assert_coverage(db_path: Path) -> int:
+    """vw_mad_coverage: exact schema; coverage in [0, 1]; windows present."""
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(f"SELECT * FROM {COVERAGE}").pl()
+        got = dict(df.schema)
+        if got != COVERAGE_SCHEMA:
+            raise ContractViolation(
+                f"{COVERAGE} schema drift:\n  got      {got}\n  expected {COVERAGE_SCHEMA}"
+            )
+        if df.is_empty():
+            raise ContractViolation(f"{COVERAGE}: no audit windows served")
+        out_of_range = df.filter((df["coverage"] < 0) | (df["coverage"] > 1))
+        if not out_of_range.is_empty():
+            raise ContractViolation(f"{COVERAGE}: coverage outside [0,1]: {out_of_range}")
+        return df.height
     finally:
         con.close()

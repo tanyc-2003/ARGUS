@@ -15,7 +15,7 @@ every gap measured and disclosed instead of papered over.
 | M1 — daily spine + factor layer + `vw_mad_daily_ohlcv` | ✅ PR #2 |
 | M2 — nightly incrementals + revision detection (SCD-2) | ✅ PR #3 |
 | M3 — cross-source voting + replay | ✅ PR #4 |
-| M4 — survivorship (graveyard, reasons, coverage) | pending |
+| M4 — survivorship (graveyard, reasons, coverage) | ✅ PR #5 |
 | M5 — intraday serving (`vw_mad_intraday`) | pending |
 | M6 — parity sampling, gap ledger, chaos drills | pending |
 

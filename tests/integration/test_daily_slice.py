@@ -11,6 +11,7 @@ import duckdb
 from argus.core.clocks import pull_knowledge_time
 from argus.landing import store
 from argus.orchestration.build_jobs import build_actions, build_daily_bars, vote_and_seal
+from argus.orchestration.universe_jobs import universe_seal
 from argus.serving import contracts
 from argus.serving.publish import publish
 
@@ -59,6 +60,7 @@ def test_full_slice(ctx) -> None:
     assert r2.rows_out == 5  # 3 AAPL + 2 SPY event bars
     seal = vote_and_seal(ctx)
     assert seal.rows_out == 5  # stooq-only: admitted single_source/degraded
+    universe_seal(ctx)  # publish gates on coverage being served
     r3 = publish(ctx)
     assert r3.rows_out == 5
 

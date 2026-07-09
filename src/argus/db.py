@@ -134,6 +134,41 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (ticker, bar_date)
     );
     """,
+    # v4 — M4 survivorship: snapshots are the immutable history; graveyard and
+    # coverage are nightly projections over them (rebuilt deterministically)
+    """
+    CREATE TABLE IF NOT EXISTS universe_snapshots (
+        source        VARCHAR NOT NULL,   -- nasdaqlisted | otherlisted
+        snapshot_date DATE NOT NULL,
+        ticker        VARCHAR NOT NULL,
+        security_name VARCHAR,
+        exchange      VARCHAR,
+        is_etf        BOOLEAN,
+        PRIMARY KEY (source, snapshot_date, ticker)
+    );
+
+    CREATE TABLE IF NOT EXISTS graveyard (
+        ticker             VARCHAR NOT NULL,
+        termination_date   DATE NOT NULL,
+        termination_reason VARCHAR NOT NULL CHECK (termination_reason IN
+                            ('merger', 'bankruptcy', 'acquisition', 'voluntary', 'unknown')),
+        reason_confidence  VARCHAR NOT NULL,   -- pending | inferred | filing | confirmed
+        reason_source      VARCHAR,
+        terminal_return    DOUBLE,
+        detection_source   VARCHAR NOT NULL,   -- symbol_dirs_diff | polygon
+        first_seen         TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, termination_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS coverage_metrics (
+        audit_window VARCHAR PRIMARY KEY,
+        window_start DATE,
+        expected_n   INTEGER NOT NULL,
+        covered_n    INTEGER NOT NULL,
+        coverage     DOUBLE NOT NULL,
+        computed_at  TIMESTAMPTZ NOT NULL
+    );
+    """,
 ]
 
 # Views are (re)created on every migrate() — idempotent, and they evolve without
@@ -188,6 +223,20 @@ SELECT
     CAST(b.close * c.cum AS DOUBLE)         AS close,
     CAST(b.volume / c.split_cum AS DOUBLE)  AS volume
 FROM b JOIN c ON b.ticker = c.ticker AND b.bar_date = c.bar_date;
+
+CREATE OR REPLACE VIEW vw_mad_delisted AS
+SELECT
+    CAST(ticker AS VARCHAR)             AS ticker,
+    CAST(termination_date AS DATE)      AS termination_date,
+    CAST(termination_reason AS VARCHAR) AS termination_reason,
+    CAST(terminal_return AS DOUBLE)     AS terminal_return
+FROM graveyard;
+
+CREATE OR REPLACE VIEW vw_mad_coverage AS
+SELECT
+    CAST(audit_window AS VARCHAR) AS audit_window,
+    CAST(coverage AS DOUBLE)      AS coverage
+FROM coverage_metrics;
 """
 
 
