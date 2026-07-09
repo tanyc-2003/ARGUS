@@ -37,12 +37,17 @@ def bar_knowledge_time(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def row_hashes(frame: pl.DataFrame) -> pl.DataFrame:
-    """Canonical per-bar content hash over the raw OHLCV values."""
+    """Canonical per-bar content hash.
+
+    Covers grade/source columns when present, not just prices: an upgraded
+    belief (single-source -> confirmed) is a real SCD-2 revision even when the
+    price didn't move.
+    """
+    hash_cols = [c for c in ["open", "high", "low", "close", "volume",
+                             "source_set", "grade", "single_source"] if c in frame.columns]
     hashes = [
-        canonical_hash(
-            {"o": r["open"], "h": r["high"], "l": r["low"], "c": r["close"], "v": r["volume"]}
-        )
-        for r in frame.select("open", "high", "low", "close", "volume").iter_rows(named=True)
+        canonical_hash({c: r[c] for c in hash_cols})
+        for r in frame.select(hash_cols).iter_rows(named=True)
     ]
     return frame.with_columns(pl.Series("payload_hash", hashes, dtype=pl.Utf8))
 
@@ -74,21 +79,6 @@ def upsert_bars(
         conn, "bars_daily", KEY_COLS, VALUE_COLS, incoming,
         revision_knowledge=revision_knowledge,
     )
-
-
-def keys_owned_by_other_sources(
-    conn: duckdb.DuckDBPyConnection, source: str
-) -> pl.DataFrame:
-    """(ticker, bar_date) keys whose CURRENT version belongs to a different source.
-
-    Until M3 voting exists, an incremental feed must not fight the bootstrap
-    spine over the same keys (vendor flip-flop would open a junk revision every
-    night). Incremental builders anti-join against this set.
-    """
-    return conn.execute(
-        "SELECT ticker, bar_date FROM bars_daily WHERE is_current AND source_set <> ?",
-        [source],
-    ).pl()
 
 
 def bars_asof(

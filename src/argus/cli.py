@@ -71,6 +71,36 @@ def bootstrap(force: bool = typer.Option(False, "--force")) -> None:
     raise SystemExit(run_nightly(settings, force=force, registry=bootstrap_registry()))
 
 
+@app.command()
+def rebuild(yes: bool = typer.Option(False, "--yes", help="confirm the canonical wipe")) -> None:
+    """Rebuild canonical DuckDB state from the L2 event store (deterministic replay).
+
+    The Parquet event store is the system of record; this wipes bars_daily,
+    corporate_actions and vote_results, replays L2, re-votes, and republishes.
+    """
+    if not yes:
+        typer.echo("This wipes the canonical tables and replays them from L2 Parquet.")
+        typer.echo("The event store is untouched. Re-run with --yes to proceed.")
+        raise SystemExit(2)
+
+    from argus.core import calendars
+    from argus.core.clocks import utc_now
+    from argus.orchestration.rebuild import rebuild_canonical
+
+    settings = load_settings()
+    trade_date = calendars.latest_completed_session(utc_now())
+    if trade_date is None:
+        typer.echo("no completed session found — aborting")
+        raise SystemExit(1)
+    conn = db_module.open_migrated(settings.db_path)
+    try:
+        summary = rebuild_canonical(settings, conn, trade_date)
+    finally:
+        conn.close()
+    for k, v in summary.items():
+        typer.echo(f"{k}: {v}")
+
+
 @app.command("verify-pit")
 def verify_pit(
     ticker: str = typer.Option(..., "--ticker"),

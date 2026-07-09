@@ -117,6 +117,23 @@ MIGRATIONS: list[str] = [
         revision_seq  INTEGER NOT NULL
     );
     """,
+    # v3 — M3 quality layer: the nightly vote audit trail (projection, rewritten each seal)
+    """
+    CREATE TABLE IF NOT EXISTS vote_results (
+        ticker        VARCHAR NOT NULL,
+        bar_date      DATE NOT NULL,
+        verdict       VARCHAR NOT NULL,   -- confirmed | single_source | conflict
+        n_sources     INTEGER NOT NULL,
+        chosen_source VARCHAR,
+        close_stooq    DOUBLE,
+        close_yfinance DOUBLE,
+        close_alpaca   DOUBLE,
+        volume_agrees BOOLEAN,
+        mad_flag      BOOLEAN NOT NULL DEFAULT FALSE,
+        voted_at      TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, bar_date)
+    );
+    """,
 ]
 
 # Views are (re)created on every migrate() — idempotent, and they evolve without

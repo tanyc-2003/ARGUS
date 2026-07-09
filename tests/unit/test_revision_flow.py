@@ -72,20 +72,20 @@ def test_unchanged_rerun_is_noop(conn) -> None:
     assert counts == {"revised": 0, "inserted": 0, "unchanged": 1}
 
 
-def test_ownership_rule_blocks_vendor_flip_flop(conn) -> None:
-    # bootstrap spine owns the key
-    daily_bars.upsert_bars(conn, _bar(100.0), source_set="stooq")
-    foreign = daily_bars.keys_owned_by_other_sources(conn, "yfinance")
-    assert foreign.height == 1  # yfinance must anti-join this key away
+def test_grade_upgrade_is_a_revision(conn) -> None:
+    """Same price, better belief (single-source -> confirmed) must open a
+    revision: the hash covers grade/source columns, not just prices."""
+    from datetime import UTC, datetime
 
-    # and the stooq row itself never got touched
+    detection = datetime(2026, 7, 8, 0, 30, tzinfo=UTC)
+    daily_bars.upsert_bars(conn, _bar(100.0), source_set="yfinance",
+                           grade="degraded", single_source=True)
+    counts = daily_bars.upsert_bars(
+        conn, _bar(100.0), source_set="yfinance,stooq", grade="good",
+        single_source=False, revision_knowledge=detection,
+    )
+    assert counts == {"revised": 1, "inserted": 1, "unchanged": 0}
     row = conn.execute(
-        "SELECT source_set, revision_seq FROM bars_daily WHERE is_current"
+        "SELECT grade, single_source, revision_seq FROM bars_daily WHERE is_current"
     ).fetchone()
-    assert row == ("stooq", 1)
-
-
-def test_ownership_rule_allows_own_keys(conn) -> None:
-    daily_bars.upsert_bars(conn, _bar(100.0), source_set="yfinance")
-    foreign = daily_bars.keys_owned_by_other_sources(conn, "yfinance")
-    assert foreign.is_empty()
+    assert row == ("good", False, 2)

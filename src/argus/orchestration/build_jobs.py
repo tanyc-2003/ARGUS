@@ -11,7 +11,7 @@ import uuid
 
 import polars as pl
 
-from argus.canonical import actions_store, daily_bars
+from argus.canonical import actions_store, daily_bars, scd2
 from argus.core.clocks import utc_now
 from argus.events import schemas as event_schemas
 from argus.events import store as event_store
@@ -64,10 +64,9 @@ def build_actions(ctx: JobContext) -> JobResult:
 
     event_store.append(ctx.settings, event_schemas.ACTION_EVENTS, events)
     counts = actions_store.upsert_actions(ctx.conn, events)
-    return JobResult(
-        rows_out=counts["inserted"] + counts["revised"],
-        detail=f"events={events.height} {counts}",
-    )
+    # 'inserted' counts every new version written (fresh + revisions);
+    # 'revised' is the matching closure bookkeeping, not additional rows
+    return JobResult(rows_out=counts["inserted"], detail=f"events={events.height} {counts}")
 
 
 def build_daily_bars(ctx: JobContext) -> JobResult:
@@ -96,21 +95,9 @@ def build_daily_bars(ctx: JobContext) -> JobResult:
         _bar_events_frame(raw, source="stooq", vendor_adjusted=True,
                           landing_key=f"{STOOQ_DATASET}:{ctx.trade_date.isoformat()}"),
     )
-
-    # ownership rule (until M3 voting): the bootstrap must not stomp keys the
-    # incremental feed already owns — same anti-join as the yfinance side.
-    foreign = daily_bars.keys_owned_by_other_sources(ctx.conn, "stooq")
-    owned = (
-        raw.join(foreign, on=["ticker", "bar_date"], how="anti")
-        if not foreign.is_empty() else raw
-    )
-    counts = daily_bars.upsert_bars(ctx.conn, owned)
     return JobResult(
-        rows_out=counts["inserted"] + counts["revised"],
-        detail=(
-            f"tickers={len(landed)} bars={raw.height} {counts} "
-            f"foreign_keys_skipped={raw.height - owned.height}"
-        ),
+        rows_out=raw.height,
+        detail=f"tickers={len(landed)} event_bars={raw.height} (canonical via j10_vote_seal)",
     )
 
 
@@ -130,17 +117,13 @@ def _bar_events_frame(raw: pl.DataFrame, *, source: str, vendor_adjusted: bool,
 
 
 def build_daily_incrementals(ctx: JobContext) -> JobResult:
-    """yfinance T−1 + revision window -> canonical; Alpaca raw daily -> L2 events.
+    """yfinance T−1 + revision window and Alpaca raw daily -> L2 events.
 
-    Ownership rule (until M3 voting): yfinance only writes keys it already owns
-    or keys nobody owns — it never revises the Stooq bootstrap spine, so vendor
-    disagreement cannot masquerade as a revision. Alpaca bars land as events
-    only: the third observation voting consumes in M3.
+    Events only: since M3, j10_vote_seal is the single projection into
+    canonical — 2-of-3 voting arbitrates vendor disagreement instead of the
+    old per-source ownership rule.
     """
-    pull_kt = utc_now()
-    revised_detail: dict[str, int] = {"revised": 0, "inserted": 0, "unchanged": 0}
     yf_rows = 0
-    dropped_foreign = 0
 
     yf_landed = _landed_for_trade_date(ctx, [YF_DAILY_DATASET])
     if yf_landed:
@@ -160,16 +143,6 @@ def build_daily_incrementals(ctx: JobContext) -> JobResult:
                               landing_key=f"{YF_DAILY_DATASET}:{ctx.trade_date.isoformat()}"),
         )
 
-        foreign = daily_bars.keys_owned_by_other_sources(ctx.conn, "yfinance")
-        owned = (
-            raw.join(foreign, on=["ticker", "bar_date"], how="anti")
-            if not foreign.is_empty() else raw
-        )
-        dropped_foreign = raw.height - owned.height
-        revised_detail = daily_bars.upsert_bars(
-            ctx.conn, owned, source_set="yfinance", revision_knowledge=pull_kt,
-        )
-
     alpaca_rows = 0
     alpaca_landed = _landed_for_trade_date(ctx, [ALPACA_DAILY_DATASET])
     for _dataset, request_key, path in alpaca_landed:
@@ -186,10 +159,80 @@ def build_daily_incrementals(ctx: JobContext) -> JobResult:
         )
 
     return JobResult(
-        rows_out=revised_detail["inserted"] + revised_detail["revised"],
+        rows_out=yf_rows + alpaca_rows,
+        detail=f"yf_event_bars={yf_rows} alpaca_event_bars={alpaca_rows}",
+    )
+
+
+def vote_and_seal(ctx: JobContext) -> JobResult:
+    """The quality seal (v4 §6): vote over L2 -> canonical bars_daily.
+
+    Runs over the FULL latest-per-source state every night, which makes it the
+    replay function too: `argus rebuild` wipes canonical and re-runs this.
+    Unchanged keys are SCD-2 no-ops; changed beliefs (new bars, revisions,
+    grade upgrades) open versions with detection-time knowledge.
+    """
+    from argus.ops import dlq as dlq_module
+    from argus.ops.errors import ErrorClass
+    from argus.quality import mad, voting
+
+    obs = voting.latest_observations(ctx.settings)
+    if obs.is_empty():
+        return JobResult(detail="no bar observations in L2 yet")
+    voted = voting.vote_bars(obs)
+    screened = mad.apply_mad_screen(voted)
+
+    canonical = screened.select(
+        "ticker", "bar_date", "open", "high", "low", "close", "volume",
+        "source_set", "grade", "single_source",
+    )
+    hashed = daily_bars.bar_knowledge_time(daily_bars.row_hashes(canonical))
+    counts = scd2.upsert(
+        ctx.conn, "bars_daily", daily_bars.KEY_COLS, daily_bars.VALUE_COLS, hashed,
+        revision_knowledge=utc_now(),
+    )
+
+    # audit-trail projection: rewritten wholesale each seal
+    vote_rows = screened.select(
+        "ticker", "bar_date", "verdict", "n_sources", "chosen_source",
+        "close_stooq", "close_yfinance", "close_alpaca", "volume_agrees", "mad_flag",
+    ).with_columns(pl.lit(utc_now()).alias("voted_at"))
+    ctx.conn.execute("DELETE FROM vote_results")
+    ctx.conn.register("vote_incoming", vote_rows.to_arrow())
+    try:
+        ctx.conn.execute("INSERT INTO vote_results SELECT * FROM vote_incoming")
+    finally:
+        ctx.conn.unregister("vote_incoming")
+
+    # conflicts dead-letter once per key (not re-spammed every night)
+    conflicts = screened.filter(pl.col("verdict") == "conflict")
+    quarantined_mad = screened.filter(pl.col("mad_flag") & pl.col("single_source"))
+    if not conflicts.is_empty():
+        already = {
+            e["request_key"]
+            for e in dlq_module.list_open(ctx.conn, limit=100_000)
+            if e["error_class"] == str(ErrorClass.VOTE_CONFLICT)
+        }
+        for row in conflicts.head(200).iter_rows(named=True):
+            key = f"{row['ticker']}:{row['bar_date']}"
+            if key in already:
+                continue
+            dlq_module.push(
+                ctx.conn, job_name="j10_vote_seal",
+                error_class=ErrorClass.VOTE_CONFLICT,
+                detail=(
+                    f"all sources disagree on close: stooq={row['close_stooq']} "
+                    f"yfinance={row['close_yfinance']} alpaca={row['close_alpaca']}"
+                ),
+                request_key=key,
+            )
+
+    skipped_iex = voting.skipped_alpaca_only(obs)
+    return JobResult(
+        rows_out=counts["inserted"],
         detail=(
-            f"yf_bars={yf_rows} {revised_detail} foreign_keys_skipped={dropped_foreign} "
-            f"alpaca_event_bars={alpaca_rows}"
+            f"voted={screened.height} {counts} conflicts={conflicts.height} "
+            f"mad_quarantined={quarantined_mad.height} alpaca_only_skipped={skipped_iex}"
         ),
     )
 

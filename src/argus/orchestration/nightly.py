@@ -34,6 +34,7 @@ def build_registry() -> list[JobSpec]:
         JobSpec("j06_polygon_ca", polygon_ref.capture_corporate_actions),
         JobSpec("j08_build_actions", build_jobs.build_actions),
         JobSpec("j09_build_daily", build_jobs.build_daily_incrementals),
+        JobSpec("j10_vote_seal", build_jobs.vote_and_seal, always=True),
         JobSpec("j12_publish", publish.publish, always=True),
     ]
 
@@ -49,5 +50,6 @@ def bootstrap_registry() -> list[JobSpec]:
         JobSpec("j08_build_actions", build_jobs.build_actions),
         JobSpec("b01_stooq_capture", stooq.capture),
         JobSpec("b02_build_daily_bars", build_jobs.build_daily_bars),
+        JobSpec("j10_vote_seal", build_jobs.vote_and_seal, always=True),
         JobSpec("j12_publish", publish.publish, always=True),
     ]
