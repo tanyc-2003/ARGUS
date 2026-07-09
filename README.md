@@ -16,7 +16,7 @@ every gap measured and disclosed instead of papered over.
 | M2 — nightly incrementals + revision detection (SCD-2) | ✅ PR #3 |
 | M3 — cross-source voting + replay | ✅ PR #4 |
 | M4 — survivorship (graveyard, reasons, coverage) | ✅ PR #5 |
-| M5 — intraday serving (`vw_mad_intraday`) | pending |
+| M5 — intraday serving (`vw_mad_intraday`) | ✅ PR #6 |
 | M6 — parity sampling, gap ledger, chaos drills | pending |
 
 ## Setup (Windows)

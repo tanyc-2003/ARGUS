@@ -43,6 +43,10 @@ def publish(ctx: JobContext) -> JobResult:
             f"CREATE OR REPLACE TABLE sv.{contracts.COVERAGE} AS "
             f"SELECT * FROM {contracts.COVERAGE} ORDER BY audit_window"
         )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE sv.{contracts.INTRADAY} AS "
+            f"SELECT * FROM {contracts.INTRADAY} ORDER BY ticker, minute"
+        )
         version_row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
         conn.execute(
             "CREATE OR REPLACE TABLE sv.serving_meta AS "
@@ -56,6 +60,7 @@ def publish(ctx: JobContext) -> JobResult:
     rows = contracts.assert_daily_ohlcv(tmp)
     n_delisted = contracts.assert_delisted(tmp)
     contracts.assert_coverage(tmp)
+    n_intraday = contracts.assert_intraday(tmp)
 
     # the dashboard may hold the previous copy open (read-only); Windows can
     # refuse the replace briefly — bounded retry, then fail loudly.
@@ -71,7 +76,7 @@ def publish(ctx: JobContext) -> JobResult:
     return JobResult(
         rows_out=rows,
         detail=(
-            f"published {rows} daily rows, {n_delisted} delisted -> "
+            f"published {rows} daily, {n_intraday} intraday, {n_delisted} delisted -> "
             f"{settings.serving_db_path.name}"
         ),
     )

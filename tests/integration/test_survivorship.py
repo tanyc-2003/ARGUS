@@ -48,10 +48,16 @@ def test_disappearance_enters_graveyard(ctx) -> None:
     result = universe_seal(ctx)
     assert result.rows_out == 1
     row = ctx.conn.execute(
-        "SELECT ticker, termination_date, termination_reason, reason_confidence "
+        "SELECT ticker, termination_date, termination_reason, reason_confidence, first_seen "
         "FROM graveyard"
     ).fetchone()
-    assert row == ("DOOMD", D2, "unknown", "pending")
+    assert row[:4] == ("DOOMD", D2, "unknown", "pending")
+
+    # regression: the SECOND seal must survive existing rows (session-tz types)
+    # and keep first_seen stable
+    assert universe_seal(ctx).rows_out == 1
+    row2 = ctx.conn.execute("SELECT first_seen FROM graveyard").fetchone()
+    assert row2[0] == row[4]
 
 
 def test_relisting_self_corrects(ctx) -> None:

@@ -13,7 +13,14 @@ def _config_path(settings: Settings, name: str) -> Path:
     base = settings.config_dir
     if not base.is_absolute():
         base = Path.cwd() / base
-    return base / name
+    path = base / name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. The config dir resolves against the working directory "
+            f"(cwd={Path.cwd()}); run from the repo root, set ARGUS_CONFIG_DIR to an "
+            "absolute path, or register the scheduled task with -RepoRoot."
+        )
+    return path
 
 
 def load_watchlist(settings: Settings) -> list[str]:

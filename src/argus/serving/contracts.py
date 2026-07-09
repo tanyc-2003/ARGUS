@@ -45,6 +45,21 @@ COVERAGE_SCHEMA: dict[str, PolarsType] = {
     "coverage": pl.Float64,
 }
 
+INTRADAY = "vw_mad_intraday"
+
+# minute is NAIVE UTC — the dashboard's fetch_intraday_bars schema is plain
+# pl.Datetime; the derivation tag is the additive disclosure column (§3.2)
+INTRADAY_SCHEMA: dict[str, PolarsType] = {
+    "ticker": pl.Utf8,
+    "minute": pl.Datetime("us"),
+    "bid": pl.Float64,
+    "ask": pl.Float64,
+    "volume": pl.Float64,
+    "derivation": pl.Utf8,
+}
+
+DERIVATIONS = frozenset({"iex_bbo", "corwin_schultz"})
+
 
 class ContractViolation(AssertionError):
     """A serving shape does not match the frozen contract."""
@@ -115,6 +130,37 @@ def assert_delisted(db_path: Path) -> int:
             raise ContractViolation(
                 f"{DELISTED}: {bad_reason} rows outside the dashboard's reason CHECK set"
             )
+        return int(total)
+    finally:
+        con.close()
+
+
+def assert_intraday(db_path: Path) -> int:
+    """vw_mad_intraday: exact schema; bid <= ask; known derivations; unique keys."""
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        sample = con.execute(f"SELECT * FROM {INTRADAY} LIMIT 10000").pl()
+        got = dict(sample.schema)
+        if got != INTRADAY_SCHEMA:
+            raise ContractViolation(
+                f"{INTRADAY} schema drift:\n  got      {got}\n  expected {INTRADAY_SCHEMA}"
+            )
+        counts = con.execute(
+            f"""
+            SELECT COUNT(*), COUNT(DISTINCT (ticker, minute)),
+                   COUNT(*) FILTER (WHERE bid > ask),
+                   COUNT(*) FILTER (WHERE derivation NOT IN ('iex_bbo', 'corwin_schultz'))
+            FROM {INTRADAY}
+            """
+        ).fetchone()
+        assert counts is not None
+        total, distinct, crossed, bad_tag = counts
+        if total != distinct:
+            raise ContractViolation(f"{INTRADAY}: (ticker, minute) not unique")
+        if crossed:
+            raise ContractViolation(f"{INTRADAY}: {crossed} rows with bid > ask")
+        if bad_tag:
+            raise ContractViolation(f"{INTRADAY}: {bad_tag} rows with unknown derivation")
         return int(total)
     finally:
         con.close()

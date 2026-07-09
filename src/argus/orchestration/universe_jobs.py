@@ -177,10 +177,12 @@ def universe_seal(ctx: JobContext) -> JobResult:
     grave = pl.concat([poly, diff], how="vertical").unique(subset=["ticker"], keep="first")
     grave = _terminal_returns(ctx, grave)
 
-    # projection rebuild; keep first_seen stable across rebuilds
+    # projection rebuild; keep first_seen stable across rebuilds.
+    # DuckDB returns TIMESTAMPTZ in the SESSION timezone — normalize to UTC
+    # before mixing with utc_now() values (empty frames cast for free).
     existing = ctx.conn.execute(
         "SELECT ticker, termination_date, first_seen FROM graveyard"
-    ).pl()
+    ).pl().with_columns(pl.col("first_seen").cast(pl.Datetime("us", "UTC")))
     now = utc_now()
     if not existing.is_empty():
         grave = grave.join(existing, on=["ticker", "termination_date"], how="left")

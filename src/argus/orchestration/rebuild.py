@@ -25,6 +25,7 @@ from argus.events import schemas as event_schemas
 from argus.events import store as event_store
 from argus.ops.jobs import JobContext, JobResult
 from argus.orchestration.build_jobs import vote_and_seal
+from argus.orchestration.intraday_jobs import intraday_seal
 from argus.orchestration.universe_jobs import universe_seal
 from argus.serving.publish import publish
 from argus.settings import Settings
@@ -35,6 +36,7 @@ if TYPE_CHECKING:  # pragma: no cover
 CANONICAL_TABLES = [
     "bars_daily", "corporate_actions", "vote_results",
     "universe_snapshots", "graveyard", "coverage_metrics",
+    "bars_minute", "quote_bars_1m", "intraday_processed", "serving_intraday",
 ]
 
 
@@ -69,6 +71,7 @@ def rebuild_canonical(
     ctx = JobContext(settings=settings, conn=conn, trade_date=trade_date, log=log)
     seal: JobResult = vote_and_seal(ctx)
     universe_seal(ctx)  # snapshots re-parse from L0; graveyard/coverage re-project
+    intraday_seal(ctx)  # markers were wiped, so every payload re-processes
     pub: JobResult | None = publish(ctx) if do_publish else None
 
     bars_row = conn.execute("SELECT COUNT(*) FROM bars_daily WHERE is_current").fetchone()

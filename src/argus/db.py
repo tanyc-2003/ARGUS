@@ -169,6 +169,51 @@ MIGRATIONS: list[str] = [
         computed_at  TIMESTAMPTZ NOT NULL
     );
     """,
+    # v5 — M5 intraday: minute bars (yfinance consolidated), IEX BBO minute
+    # buckets, and the incremental-processing marker for L0 payloads
+    """
+    CREATE TABLE IF NOT EXISTS bars_minute (
+        ticker         VARCHAR NOT NULL,
+        minute_ts      TIMESTAMPTZ NOT NULL,
+        open           DOUBLE,
+        high           DOUBLE,
+        low            DOUBLE,
+        close          DOUBLE,
+        volume         DOUBLE,       -- consolidated (yfinance); NEVER IEX
+        source         VARCHAR NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, minute_ts)
+    );
+
+    CREATE TABLE IF NOT EXISTS quote_bars_1m (
+        ticker         VARCHAR NOT NULL,
+        minute_ts      TIMESTAMPTZ NOT NULL,
+        bid_close      DOUBLE,
+        ask_close      DOUBLE,
+        bid_twm        DOUBLE,
+        ask_twm        DOUBLE,
+        n_quotes       INTEGER NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, minute_ts)
+    );
+
+    CREATE TABLE IF NOT EXISTS intraday_processed (
+        dataset      VARCHAR NOT NULL,
+        request_key  VARCHAR NOT NULL,
+        processed_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (dataset, request_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS serving_intraday (
+        ticker     VARCHAR NOT NULL,
+        minute_ts  TIMESTAMPTZ NOT NULL,
+        bid        DOUBLE,
+        ask        DOUBLE,
+        volume     DOUBLE,
+        derivation VARCHAR NOT NULL,   -- iex_bbo | corwin_schultz
+        PRIMARY KEY (ticker, minute_ts)
+    );
+    """,
 ]
 
 # Views are (re)created on every migrate() — idempotent, and they evolve without
@@ -237,6 +282,16 @@ SELECT
     CAST(audit_window AS VARCHAR) AS audit_window,
     CAST(coverage AS DOUBLE)      AS coverage
 FROM coverage_metrics;
+
+CREATE OR REPLACE VIEW vw_mad_intraday AS
+SELECT
+    CAST(ticker AS VARCHAR)              AS ticker,
+    timezone('UTC', minute_ts)           AS minute,   -- naive UTC TIMESTAMP (contract)
+    CAST(bid AS DOUBLE)                  AS bid,
+    CAST(ask AS DOUBLE)                  AS ask,
+    CAST(volume AS DOUBLE)               AS volume,
+    CAST(derivation AS VARCHAR)          AS derivation
+FROM serving_intraday;
 """
 
 
