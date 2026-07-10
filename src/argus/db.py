@@ -214,6 +214,39 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (ticker, minute_ts)
     );
     """,
+    # v6 — M6 trust layer: parity drift alarm, sectors, and the gap ledger
+    """
+    CREATE TABLE IF NOT EXISTS parity_scores (
+        sample_date DATE NOT NULL,
+        ticker      VARCHAR NOT NULL,
+        bar_date    DATE NOT NULL,
+        field       VARCHAR NOT NULL,   -- open | high | low | close | volume
+        ours        DOUBLE,
+        theirs      DOUBLE,
+        rel_diff    DOUBLE,
+        within_tol  BOOLEAN NOT NULL,
+        PRIMARY KEY (sample_date, ticker, bar_date, field)
+    );
+
+    CREATE TABLE IF NOT EXISTS sectors (
+        ticker     VARCHAR PRIMARY KEY,
+        cik        VARCHAR,
+        sic        VARCHAR,
+        sector     VARCHAR,   -- sector ETF symbol (dashboard sector_map.yaml convention)
+        industry   VARCHAR,   -- SIC description
+        source     VARCHAR NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gap_ledger (
+        gap_key     VARCHAR PRIMARY KEY,
+        description VARCHAR NOT NULL,
+        metric      DOUBLE,
+        unit        VARCHAR,
+        severity    VARCHAR NOT NULL,   -- info | warn | blocker
+        updated_at  TIMESTAMPTZ NOT NULL
+    );
+    """,
 ]
 
 # Views are (re)created on every migrate() — idempotent, and they evolve without
@@ -292,6 +325,14 @@ SELECT
     CAST(volume AS DOUBLE)               AS volume,
     CAST(derivation AS VARCHAR)          AS derivation
 FROM serving_intraday;
+
+CREATE OR REPLACE VIEW vw_mad_sectors AS
+SELECT
+    CAST(ticker AS VARCHAR)   AS ticker,
+    CAST(sector AS VARCHAR)   AS sector,
+    CAST(industry AS VARCHAR) AS industry
+FROM sectors
+WHERE sector IS NOT NULL;
 """
 
 

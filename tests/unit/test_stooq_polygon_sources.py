@@ -62,6 +62,26 @@ def test_stooq_no_data_response_skipped_not_landed(ctx) -> None:
     assert "no_data=2" in result.detail
 
 
+def test_stooq_partial_drift_lands_the_good_tickers(ctx) -> None:
+    """Stooq's HTML rate-limit page for one ticker must not kill the rest."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, text="<html>daily hits limit</html>")
+        return httpx.Response(200, text=STOOQ_CSV)
+
+    result = stooq.capture(ctx, client=_fc(handler))
+    assert result.rows_out == 1
+    assert "drifted=1" in result.detail
+
+
+def test_stooq_total_drift_fails_loudly(ctx) -> None:
+    with pytest.raises(SchemaDrift):
+        stooq.capture(ctx, client=_fc(lambda r: httpx.Response(200, text="<html>limit</html>")))
+
+
 # ---- polygon ----------------------------------------------------------------
 
 def test_polygon_capture_requires_key(ctx) -> None:

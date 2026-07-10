@@ -32,6 +32,12 @@ def test_config_dir(tmp_path: Path) -> Path:
         "tickers:\n  - {ticker: SPY, role: factor_etf}\n  - {ticker: AAPL, role: seed}\n",
         encoding="utf-8",
     )
+    (cfg / "sic_sector_map.yaml").write_text(
+        "ranges:\n"
+        "  - {lo: 3570, hi: 3579, sector: XLK}\n"
+        "  - {lo: 6000, hi: 6499, sector: XLF}\n",
+        encoding="utf-8",
+    )
     return cfg
 
 

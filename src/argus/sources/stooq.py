@@ -54,6 +54,8 @@ def capture(
     landed = 0
     skipped = 0
     no_data = 0
+    drifted = 0
+    last_drift: SchemaDrift | None = None
     try:
         for row in load_universe(ctx.settings):
             ticker = row["ticker"]
@@ -67,7 +69,16 @@ def capture(
                 no_data += 1
                 ctx.log.warning("stooq_no_data", ticker=ticker)
                 continue
-            _validate(ticker, text)
+            try:
+                _validate(ticker, text)
+            except SchemaDrift as exc:
+                # one bad response (Stooq's HTML rate-limit page, typically) must
+                # not kill the other tickers — count it and move on; systemic
+                # drift (everything bad) still fails the job loudly below
+                drifted += 1
+                last_drift = exc
+                ctx.log.warning("stooq_drifted_response", ticker=ticker)
+                continue
             store.write(
                 ctx.conn, ctx.settings,
                 dataset=DATASET, source=SOURCE, request_key=request_key,
@@ -78,8 +89,12 @@ def capture(
     except TransportFailure:
         health.record_failure(ctx.conn, SOURCE)
         raise
+    if drifted and landed == 0 and skipped == 0 and no_data == 0:
+        health.record_failure(ctx.conn, SOURCE)
+        assert last_drift is not None
+        raise last_drift  # every single response was bad — that IS schema drift
     health.record_success(ctx.conn, SOURCE)
     return JobResult(
         rows_out=landed, budget_used=budget.used,
-        detail=f"landed={landed} already={skipped} no_data={no_data}",
+        detail=f"landed={landed} already={skipped} no_data={no_data} drifted={drifted}",
     )

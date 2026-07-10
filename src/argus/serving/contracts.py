@@ -45,6 +45,14 @@ COVERAGE_SCHEMA: dict[str, PolarsType] = {
     "coverage": pl.Float64,
 }
 
+SECTORS = "vw_mad_sectors"
+
+SECTORS_SCHEMA: dict[str, PolarsType] = {
+    "ticker": pl.Utf8,
+    "sector": pl.Utf8,
+    "industry": pl.Utf8,
+}
+
 INTRADAY = "vw_mad_intraday"
 
 # minute is NAIVE UTC — the dashboard's fetch_intraday_bars schema is plain
@@ -131,6 +139,25 @@ def assert_delisted(db_path: Path) -> int:
                 f"{DELISTED}: {bad_reason} rows outside the dashboard's reason CHECK set"
             )
         return int(total)
+    finally:
+        con.close()
+
+
+def assert_sectors(db_path: Path) -> int:
+    """vw_mad_sectors: exact schema; unique tickers; no null sectors served."""
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(f"SELECT * FROM {SECTORS}").pl()
+        got = dict(df.schema)
+        if got != SECTORS_SCHEMA:
+            raise ContractViolation(
+                f"{SECTORS} schema drift:\n  got      {got}\n  expected {SECTORS_SCHEMA}"
+            )
+        if df.height != df["ticker"].n_unique():
+            raise ContractViolation(f"{SECTORS}: duplicate tickers")
+        if not df.is_empty() and df["sector"].null_count():
+            raise ContractViolation(f"{SECTORS}: null sectors must not be served")
+        return df.height
     finally:
         con.close()
 

@@ -32,6 +32,29 @@ def load_watchlist(settings: Settings) -> list[str]:
     return tickers
 
 
+def load_sic_map(settings: Settings) -> list[tuple[int, int, str]]:
+    """(lo, hi, sector_etf) ranges, first match wins — see config/sic_sector_map.yaml."""
+    path = _config_path(settings, "sic_sector_map.yaml")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    ranges = [(int(r["lo"]), int(r["hi"]), str(r["sector"])) for r in data.get("ranges", [])]
+    if not ranges:
+        raise ValueError(f"sic map at {path} is empty")
+    return ranges
+
+
+def sic_to_sector(sic: str | int | None, ranges: list[tuple[int, int, str]]) -> str | None:
+    if sic is None or sic == "":
+        return None
+    try:
+        code = int(sic)
+    except (TypeError, ValueError):
+        return None
+    for lo, hi, sector in ranges:
+        if lo <= code <= hi:
+            return sector
+    return None
+
+
 def load_universe(settings: Settings) -> list[dict[str, str]]:
     path = _config_path(settings, "universe.yaml")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))

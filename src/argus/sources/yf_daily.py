@@ -27,6 +27,7 @@ from argus.ops.ratelimit import RunBudget, TokenBucket, yfinance_bucket
 SOURCE = "yfinance"
 DATASET = "yf_daily"
 LOOKBACK_DAYS = 12  # calendar days: T-5 SESSIONS can span 11 days across a holiday week
+HISTORY_START = date(1990, 1, 1)  # bootstrap depth (R1 needs >= 10y)
 
 Downloader = Callable[[str, date, date], Any]  # (ticker, start, end) -> pandas DataFrame
 
@@ -62,13 +63,39 @@ def capture(
     downloader: Downloader | None = None,
     bucket: TokenBucket | None = None,
 ) -> JobResult:
+    start = ctx.trade_date - timedelta(days=LOOKBACK_DAYS)
+    return _capture_window(ctx, start, downloader=downloader, bucket=bucket, key_tag="")
+
+
+def capture_history(
+    ctx: JobContext,
+    downloader: Downloader | None = None,
+    bucket: TokenBucket | None = None,
+) -> JobResult:
+    """Deep-history bootstrap capture (b01): the full Yahoo daily archive per
+    universe ticker. Became the bootstrap spine when Stooq closed its endpoints
+    behind a JS proof-of-work challenge (2026-07: a source-permanence event the
+    multi-source design absorbs). Same landing dataset — the payloads flow
+    through the identical parse -> reverse -> events -> vote path."""
+    return _capture_window(
+        ctx, HISTORY_START, downloader=downloader, bucket=bucket, key_tag="history:"
+    )
+
+
+def _capture_window(
+    ctx: JobContext,
+    start: date,
+    *,
+    downloader: Downloader | None,
+    bucket: TokenBucket | None,
+    key_tag: str,
+) -> JobResult:
     if health.is_open(ctx.conn, SOURCE):
         raise SourceDown(f"{SOURCE}: circuit open", source=SOURCE)
     downloader = downloader or _default_downloader
     bucket = bucket or yfinance_bucket()
     budget = RunBudget(SOURCE, ctx.settings.yfinance_nightly_budget)
 
-    start = ctx.trade_date - timedelta(days=LOOKBACK_DAYS)
     end = ctx.trade_date + timedelta(days=1)  # yfinance end is exclusive
 
     landed = 0
@@ -77,7 +104,9 @@ def capture(
     empty = 0
     for row in load_universe(ctx.settings):
         ticker = row["ticker"]
-        request_key = f"{ticker}:{ctx.trade_date.isoformat()}"
+        # the trade-date suffix keeps history payloads visible to the same
+        # per-trade-date build queue as the nightly incrementals
+        request_key = f"{ticker}:{key_tag}{ctx.trade_date.isoformat()}"
         if store.ensure(ctx.conn, DATASET, SOURCE, request_key) is not None:
             skipped += 1
             continue
