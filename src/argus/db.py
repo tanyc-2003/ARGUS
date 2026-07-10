@@ -134,6 +134,119 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (ticker, bar_date)
     );
     """,
+    # v4 — M4 survivorship: snapshots are the immutable history; graveyard and
+    # coverage are nightly projections over them (rebuilt deterministically)
+    """
+    CREATE TABLE IF NOT EXISTS universe_snapshots (
+        source        VARCHAR NOT NULL,   -- nasdaqlisted | otherlisted
+        snapshot_date DATE NOT NULL,
+        ticker        VARCHAR NOT NULL,
+        security_name VARCHAR,
+        exchange      VARCHAR,
+        is_etf        BOOLEAN,
+        PRIMARY KEY (source, snapshot_date, ticker)
+    );
+
+    CREATE TABLE IF NOT EXISTS graveyard (
+        ticker             VARCHAR NOT NULL,
+        termination_date   DATE NOT NULL,
+        termination_reason VARCHAR NOT NULL CHECK (termination_reason IN
+                            ('merger', 'bankruptcy', 'acquisition', 'voluntary', 'unknown')),
+        reason_confidence  VARCHAR NOT NULL,   -- pending | inferred | filing | confirmed
+        reason_source      VARCHAR,
+        terminal_return    DOUBLE,
+        detection_source   VARCHAR NOT NULL,   -- symbol_dirs_diff | polygon
+        first_seen         TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, termination_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS coverage_metrics (
+        audit_window VARCHAR PRIMARY KEY,
+        window_start DATE,
+        expected_n   INTEGER NOT NULL,
+        covered_n    INTEGER NOT NULL,
+        coverage     DOUBLE NOT NULL,
+        computed_at  TIMESTAMPTZ NOT NULL
+    );
+    """,
+    # v5 — M5 intraday: minute bars (yfinance consolidated), IEX BBO minute
+    # buckets, and the incremental-processing marker for L0 payloads
+    """
+    CREATE TABLE IF NOT EXISTS bars_minute (
+        ticker         VARCHAR NOT NULL,
+        minute_ts      TIMESTAMPTZ NOT NULL,
+        open           DOUBLE,
+        high           DOUBLE,
+        low            DOUBLE,
+        close          DOUBLE,
+        volume         DOUBLE,       -- consolidated (yfinance); NEVER IEX
+        source         VARCHAR NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, minute_ts)
+    );
+
+    CREATE TABLE IF NOT EXISTS quote_bars_1m (
+        ticker         VARCHAR NOT NULL,
+        minute_ts      TIMESTAMPTZ NOT NULL,
+        bid_close      DOUBLE,
+        ask_close      DOUBLE,
+        bid_twm        DOUBLE,
+        ask_twm        DOUBLE,
+        n_quotes       INTEGER NOT NULL,
+        knowledge_time TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (ticker, minute_ts)
+    );
+
+    CREATE TABLE IF NOT EXISTS intraday_processed (
+        dataset      VARCHAR NOT NULL,
+        request_key  VARCHAR NOT NULL,
+        processed_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (dataset, request_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS serving_intraday (
+        ticker     VARCHAR NOT NULL,
+        minute_ts  TIMESTAMPTZ NOT NULL,
+        bid        DOUBLE,
+        ask        DOUBLE,
+        volume     DOUBLE,
+        derivation VARCHAR NOT NULL,   -- iex_bbo | corwin_schultz
+        PRIMARY KEY (ticker, minute_ts)
+    );
+    """,
+    # v6 — M6 trust layer: parity drift alarm, sectors, and the gap ledger
+    """
+    CREATE TABLE IF NOT EXISTS parity_scores (
+        sample_date DATE NOT NULL,
+        ticker      VARCHAR NOT NULL,
+        bar_date    DATE NOT NULL,
+        field       VARCHAR NOT NULL,   -- open | high | low | close | volume
+        ours        DOUBLE,
+        theirs      DOUBLE,
+        rel_diff    DOUBLE,
+        within_tol  BOOLEAN NOT NULL,
+        PRIMARY KEY (sample_date, ticker, bar_date, field)
+    );
+
+    CREATE TABLE IF NOT EXISTS sectors (
+        ticker     VARCHAR PRIMARY KEY,
+        cik        VARCHAR,
+        sic        VARCHAR,
+        sector     VARCHAR,   -- sector ETF symbol (dashboard sector_map.yaml convention)
+        industry   VARCHAR,   -- SIC description
+        source     VARCHAR NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gap_ledger (
+        gap_key     VARCHAR PRIMARY KEY,
+        description VARCHAR NOT NULL,
+        metric      DOUBLE,
+        unit        VARCHAR,
+        severity    VARCHAR NOT NULL,   -- info | warn | blocker
+        updated_at  TIMESTAMPTZ NOT NULL
+    );
+    """,
 ]
 
 # Views are (re)created on every migrate() — idempotent, and they evolve without
@@ -188,6 +301,38 @@ SELECT
     CAST(b.close * c.cum AS DOUBLE)         AS close,
     CAST(b.volume / c.split_cum AS DOUBLE)  AS volume
 FROM b JOIN c ON b.ticker = c.ticker AND b.bar_date = c.bar_date;
+
+CREATE OR REPLACE VIEW vw_mad_delisted AS
+SELECT
+    CAST(ticker AS VARCHAR)             AS ticker,
+    CAST(termination_date AS DATE)      AS termination_date,
+    CAST(termination_reason AS VARCHAR) AS termination_reason,
+    CAST(terminal_return AS DOUBLE)     AS terminal_return
+FROM graveyard;
+
+CREATE OR REPLACE VIEW vw_mad_coverage AS
+SELECT
+    CAST(audit_window AS VARCHAR) AS audit_window,
+    CAST(coverage AS DOUBLE)      AS coverage
+FROM coverage_metrics;
+
+CREATE OR REPLACE VIEW vw_mad_intraday AS
+SELECT
+    CAST(ticker AS VARCHAR)              AS ticker,
+    timezone('UTC', minute_ts)           AS minute,   -- naive UTC TIMESTAMP (contract)
+    CAST(bid AS DOUBLE)                  AS bid,
+    CAST(ask AS DOUBLE)                  AS ask,
+    CAST(volume AS DOUBLE)               AS volume,
+    CAST(derivation AS VARCHAR)          AS derivation
+FROM serving_intraday;
+
+CREATE OR REPLACE VIEW vw_mad_sectors AS
+SELECT
+    CAST(ticker AS VARCHAR)   AS ticker,
+    CAST(sector AS VARCHAR)   AS sector,
+    CAST(industry AS VARCHAR) AS industry
+FROM sectors
+WHERE sector IS NOT NULL;
 """
 
 

@@ -4,6 +4,7 @@ projection of the L2 event store. Wipe it, rebuild it, get the same state.
 
 from argus.orchestration.build_jobs import build_actions, build_daily_bars, vote_and_seal
 from argus.orchestration.rebuild import canonical_state_fingerprint, rebuild_canonical
+from argus.orchestration.universe_jobs import universe_seal
 from argus.serving import contracts
 from argus.serving.publish import publish
 from tests.integration.test_daily_slice import (
@@ -25,6 +26,7 @@ def _build_normal_path(ctx) -> str:  # type: ignore[no-untyped-def]
     build_actions(ctx)
     build_daily_bars(ctx)
     vote_and_seal(ctx)
+    universe_seal(ctx)  # publish gates on coverage being served
     publish(ctx)
     return canonical_state_fingerprint(ctx.conn)
 

@@ -164,9 +164,24 @@ def dlq_list(limit: int = typer.Option(20, "--limit")) -> None:
     if not entries:
         typer.echo("DLQ is empty")
     for e in entries:
+        # error details may carry non-ASCII (polars uses μ); Windows consoles
+        # are often cp1252 — degrade characters rather than crash the listing
+        detail = str(e["detail"])[:120].encode("ascii", errors="replace").decode("ascii")
         typer.echo(f"#{e['id']}  {e['first_seen']}  {e['job_name']}  "
-                   f"[{e['error_class']}] {e['detail'][:120]}")
+                   f"[{e['error_class']}] {detail}")
     conn.close()
+
+
+@app.command("dlq-resolve")
+def dlq_resolve(dlq_id: int) -> None:
+    """Mark a dead-letter entry as resolved."""
+    from argus.ops import dlq
+
+    settings = load_settings()
+    conn = db_module.open_migrated(settings.db_path)
+    dlq.resolve(conn, dlq_id)
+    conn.close()
+    typer.echo(f"resolved #{dlq_id}")
 
 
 @app.command()

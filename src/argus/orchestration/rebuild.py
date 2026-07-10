@@ -25,13 +25,23 @@ from argus.events import schemas as event_schemas
 from argus.events import store as event_store
 from argus.ops.jobs import JobContext, JobResult
 from argus.orchestration.build_jobs import vote_and_seal
+from argus.orchestration.intraday_jobs import intraday_seal
+from argus.orchestration.trust_jobs import gap_ledger_seal, sector_seal
+from argus.orchestration.universe_jobs import universe_seal
 from argus.serving.publish import publish
 from argus.settings import Settings
 
 if TYPE_CHECKING:  # pragma: no cover
     import duckdb
 
-CANONICAL_TABLES = ["bars_daily", "corporate_actions", "vote_results"]
+CANONICAL_TABLES = [
+    "bars_daily", "corporate_actions", "vote_results",
+    "universe_snapshots", "graveyard", "coverage_metrics",
+    "bars_minute", "quote_bars_1m", "intraday_processed", "serving_intraday",
+    "sectors", "gap_ledger",
+    # parity_scores deliberately NOT wiped: it is a historical drift record,
+    # not a projection of L0/L2
+]
 
 
 def replay_actions(settings: Settings, conn: duckdb.DuckDBPyConnection) -> int:
@@ -64,6 +74,10 @@ def rebuild_canonical(
     n_actions = replay_actions(settings, conn)
     ctx = JobContext(settings=settings, conn=conn, trade_date=trade_date, log=log)
     seal: JobResult = vote_and_seal(ctx)
+    universe_seal(ctx)  # snapshots re-parse from L0; graveyard/coverage re-project
+    intraday_seal(ctx)  # markers were wiped, so every payload re-processes
+    sector_seal(ctx)  # re-parses landed EDGAR submissions
+    gap_ledger_seal(ctx)
     pub: JobResult | None = publish(ctx) if do_publish else None
 
     bars_row = conn.execute("SELECT COUNT(*) FROM bars_daily WHERE is_current").fetchone()

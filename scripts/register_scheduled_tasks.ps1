@@ -18,14 +18,22 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ArgusExe,
 
+    # repo root: argus resolves config/ relative to its working directory, and
+    # Task Scheduler defaults to System32 — this MUST be set or capture jobs
+    # fail with FileNotFoundError (found the hard way on the first real night)
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+
     [string]$NightlyTime = "23:45"
 )
 
 if (-not (Test-Path $ArgusExe)) {
     throw "argus executable not found at '$ArgusExe' - create the venv and 'pip install -e .' first."
 }
+if (-not (Test-Path (Join-Path $RepoRoot "config\watchlist.yaml"))) {
+    throw "'$RepoRoot' does not look like the ARGUS repo (config\watchlist.yaml missing)."
+}
 
-$action = New-ScheduledTaskAction -Execute $ArgusExe -Argument "nightly"
+$action = New-ScheduledTaskAction -Execute $ArgusExe -Argument "nightly" -WorkingDirectory $RepoRoot
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 

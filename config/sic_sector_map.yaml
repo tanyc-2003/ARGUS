@@ -1,0 +1,50 @@
+# SIC code ranges -> sector ETF (the dashboard's sector_map.yaml convention).
+# Ranges are inclusive [lo, hi]; first match wins, top to bottom (more specific
+# ranges before broad divisions). Versioned in git — edits are reviewable.
+# Unmapped SICs serve no sector (the view filters nulls; the gap ledger counts them).
+ranges:
+  # Technology (XLK): computers, software, semiconductors, electronics
+  - {lo: 3570, hi: 3579, sector: XLK}   # computer & office equipment
+  - {lo: 3600, hi: 3699, sector: XLK}   # electronic & electrical equipment
+  - {lo: 7370, hi: 7379, sector: XLK}   # computer programming & data processing
+  # Communication services (XLC): media, telecom, publishing
+  - {lo: 2700, hi: 2799, sector: XLC}   # printing & publishing
+  - {lo: 4800, hi: 4899, sector: XLC}   # communications
+  - {lo: 7800, hi: 7899, sector: XLC}   # motion pictures
+  # Health care (XLV)
+  - {lo: 2830, hi: 2839, sector: XLV}   # drugs
+  - {lo: 3840, hi: 3859, sector: XLV}   # medical instruments
+  - {lo: 8000, hi: 8099, sector: XLV}   # health services
+  # Financials (XLF)
+  - {lo: 6000, hi: 6499, sector: XLF}   # banks, credit, insurance
+  - {lo: 6700, hi: 6799, sector: XLF}   # holding & investment offices
+  # Real estate (XLRE)
+  - {lo: 6500, hi: 6599, sector: XLRE}  # real estate
+  # Energy (XLE)
+  - {lo: 1300, hi: 1399, sector: XLE}   # oil & gas extraction
+  - {lo: 2900, hi: 2999, sector: XLE}   # petroleum refining
+  # Materials (XLB)
+  - {lo: 1000, hi: 1299, sector: XLB}   # metal & coal mining
+  - {lo: 2600, hi: 2699, sector: XLB}   # paper
+  - {lo: 2800, hi: 2829, sector: XLB}   # chemicals (ex-drugs)
+  - {lo: 2840, hi: 2899, sector: XLB}   # specialty chemicals
+  - {lo: 3200, hi: 3399, sector: XLB}   # stone, glass, metals
+  # Consumer staples (XLP)
+  - {lo: 2000, hi: 2199, sector: XLP}   # food & tobacco
+  - {lo: 5400, hi: 5499, sector: XLP}   # food stores
+  - {lo: 5912, hi: 5912, sector: XLP}   # drug stores
+  # Consumer discretionary (XLY)
+  - {lo: 2300, hi: 2399, sector: XLY}   # apparel
+  - {lo: 3700, hi: 3719, sector: XLY}   # motor vehicles
+  - {lo: 5000, hi: 5999, sector: XLY}   # wholesale & retail trade
+  - {lo: 7000, hi: 7299, sector: XLY}   # hotels & personal services
+  - {lo: 5800, hi: 5899, sector: XLY}   # eating & drinking places
+  # Utilities (XLU)
+  - {lo: 4900, hi: 4999, sector: XLU}   # electric, gas, sanitary services
+  # Industrials (XLI) — broad divisions last so specific ranges above win
+  - {lo: 1500, hi: 1799, sector: XLI}   # construction
+  - {lo: 3400, hi: 3569, sector: XLI}   # fabricated metal & machinery
+  - {lo: 3580, hi: 3599, sector: XLI}   # service industry machinery
+  - {lo: 3720, hi: 3799, sector: XLI}   # aerospace & transport equipment
+  - {lo: 4000, hi: 4799, sector: XLI}   # transportation
+  - {lo: 8700, hi: 8799, sector: XLI}   # engineering & management services

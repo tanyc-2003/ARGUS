@@ -35,6 +35,26 @@ def publish(ctx: JobContext) -> JobResult:
             f"CREATE OR REPLACE TABLE sv.{contracts.DAILY_OHLCV} AS "
             f"SELECT * FROM {contracts.DAILY_OHLCV} ORDER BY ticker, effective_date"
         )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE sv.{contracts.DELISTED} AS "
+            f"SELECT * FROM {contracts.DELISTED} ORDER BY ticker, termination_date"
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE sv.{contracts.COVERAGE} AS "
+            f"SELECT * FROM {contracts.COVERAGE} ORDER BY audit_window"
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE sv.{contracts.INTRADAY} AS "
+            f"SELECT * FROM {contracts.INTRADAY} ORDER BY ticker, minute"
+        )
+        conn.execute(
+            f"CREATE OR REPLACE TABLE sv.{contracts.SECTORS} AS "
+            f"SELECT * FROM {contracts.SECTORS} ORDER BY ticker"
+        )
+        conn.execute(
+            "CREATE OR REPLACE TABLE sv.gap_ledger AS "
+            "SELECT * FROM gap_ledger ORDER BY gap_key"
+        )
         version_row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
         conn.execute(
             "CREATE OR REPLACE TABLE sv.serving_meta AS "
@@ -44,7 +64,12 @@ def publish(ctx: JobContext) -> JobResult:
     finally:
         conn.execute("DETACH sv")
 
-    rows = contracts.assert_daily_ohlcv(tmp)  # gate BEFORE the swap
+    # gates BEFORE the swap — any contract violation leaves yesterday's copy live
+    rows = contracts.assert_daily_ohlcv(tmp)
+    n_delisted = contracts.assert_delisted(tmp)
+    contracts.assert_coverage(tmp)
+    n_intraday = contracts.assert_intraday(tmp)
+    contracts.assert_sectors(tmp)
 
     # the dashboard may hold the previous copy open (read-only); Windows can
     # refuse the replace briefly — bounded retry, then fail loudly.
@@ -57,5 +82,10 @@ def publish(ctx: JobContext) -> JobResult:
                 raise
             time.sleep(_REPLACE_DELAY_S)
 
-    return JobResult(rows_out=rows, detail=f"published {rows} daily rows -> "
-                                           f"{settings.serving_db_path.name}")
+    return JobResult(
+        rows_out=rows,
+        detail=(
+            f"published {rows} daily, {n_intraday} intraday, {n_delisted} delisted -> "
+            f"{settings.serving_db_path.name}"
+        ),
+    )
