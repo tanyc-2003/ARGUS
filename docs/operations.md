@@ -1,0 +1,146 @@
+# Setup & runbook
+
+ARGUS targets Windows (the scheduler integration uses Windows Task Scheduler) and Python 3.11+.
+It runs on a single machine with a local data volume.
+
+## Install
+
+```powershell
+# 1. Create the venv OUTSIDE any cloud-synced folder.
+#    (The repo may live in OneDrive; runtime artifacts must not.)
+py -3.14 -m venv C:\argus-data\venv
+C:\argus-data\venv\Scripts\pip install -e ".[dev]"
+
+# 2. Configure.
+copy .env.example .env      # fill in keys; a blank key means the job SKIPS, it does not fail
+
+# 3. Sanity check + build the database.
+C:\argus-data\venv\Scripts\argus check
+C:\argus-data\venv\Scripts\argus init-db
+```
+
+### Environment (`.env`, all vars prefixed `ARGUS_`)
+
+| Variable | Needed for | Blank behavior |
+|---|---|---|
+| `ARGUS_DATA_ROOT` | Everything (default `C:\argus-data`) | Must be **outside** OneDrive/Dropbox/GDrive — startup refuses a synced path unless `ARGUS_ALLOW_SYNCED_DATA_ROOT=1`. |
+| `ARGUS_ALPACA_KEY_ID` / `ARGUS_ALPACA_SECRET_KEY` | Alpaca IEX daily bars + quotes (`j03`, `j05`) | Those jobs skip cleanly. |
+| `ARGUS_POLYGON_API_KEY` | Corporate actions, delisted ref, parity, and **`bootstrap`** | Corporate-action jobs skip; `bootstrap` **refuses** to run. |
+| `ARGUS_EDGAR_USER_AGENT` | SEC EDGAR (sectors, delisting reasons) | EDGAR job skips. Must be a descriptive UA with contact info (EDGAR fair-access policy). |
+
+Nightly per-source call budgets are also configurable (`ARGUS_POLYGON_NIGHTLY_BUDGET`, etc.);
+defaults are in `settings.py`.
+
+## First run
+
+```powershell
+# One-off deep-history spine (requires the Polygon key). ~8 minutes of rate-limited drip.
+C:\argus-data\venv\Scripts\argus bootstrap
+
+# A normal night.
+C:\argus-data\venv\Scripts\argus nightly
+
+# Explain how any served value was built, factor by factor.
+C:\argus-data\venv\Scripts\argus verify-pit --ticker AAPL --date 2020-08-28
+```
+
+## Schedule it
+
+```powershell
+# Fires daily 23:45 local + at every logon; idempotent per trade date.
+.\scripts\register_scheduled_tasks.ps1 -ArgusExe C:\argus-data\venv\Scripts\argus.exe
+```
+
+This registers two Windows scheduled tasks (both `StartWhenAvailable` + `WakeToRun`, so a
+missed night runs as soon as the machine is next awake):
+
+- **ARGUS Nightly** — daily at 23:45 local (comfortably after the US close year-round; the
+  runner resolves the actual trade date from the exchange calendar).
+- **ARGUS Catch-up** — at every logon; recovers nights lost to sleep/shutdown. Harmless if the
+  night is already sealed.
+
+The tasks set the **repo as the working directory** — this is required, because ARGUS resolves
+`config/` relative to its working directory and Task Scheduler otherwise defaults to `System32`
+(capture jobs would fail with `FileNotFoundError`). Double-firing is safe: jobs are idempotent
+per trade date and a concurrent instance bows out on the DuckDB lock.
+
+## The CLI
+
+| Command | Purpose |
+|---|---|
+| `argus check` | Env sanity: data root, which keys are set, latest completed session. |
+| `argus init-db` | Create the data root and build the DB at the current schema. |
+| `argus nightly [--only NAME ...] [--force]` | Run the nightly pipeline for the latest completed session. |
+| `argus job NAME [--force]` | Run a single named job. |
+| `argus jobs-list` | List the nightly jobs in execution order. |
+| `argus bootstrap [--force]` | One-off deep-history spine (requires Polygon key). |
+| `argus rebuild --yes` | Wipe canonical tables and deterministically replay from L2. |
+| `argus verify-pit --ticker T --date YYYY-MM-DD` | Show the full PIT audit trail for a served value. |
+| `argus status [--limit N]` | Recent `job_runs` + open DLQ depth. |
+| `argus dlq-list [--limit N]` | Open dead-letter entries. |
+| `argus dlq-resolve ID` | Mark a dead-letter entry resolved. |
+
+## Daily health check (30 seconds)
+
+```powershell
+C:\argus-data\venv\Scripts\argus status      # last night's job statuses + DLQ depth
+C:\argus-data\venv\Scripts\argus dlq-list     # anything open needs a look
+```
+
+A healthy night: every job is `ok`, `skipped_already_done`, `skipped_source_down` (keys not
+configured), or `budget_exhausted` (resumes tomorrow). `failed` means there is a DLQ entry to
+triage.
+
+## DLQ triage
+
+- **`source_schema_drift`** — a vendor changed shape. Inspect the landed payload at the path in
+  the entry, fix the normalizer, re-run the build job (`argus job <name> --force`), then
+  `argus dlq-resolve <id>`.
+- **`vote_conflict`** — all sources disagree on a bar. Check `vote_results` for the per-source
+  closes; the row is quarantined (never served) until sources agree.
+- **`transport`** — network flake. The circuit breaker opens after 3 consecutive failures and
+  self-heals after ~20h.
+
+## Dead-source drill (run quarterly)
+
+1. Rename a key in `.env` (e.g. `ARGUS_POLYGON_API_KEY` → `_DISABLED`).
+2. Run `argus nightly --force`. Expected: that source's jobs record `skipped_source_down`,
+   everything else completes, publish still seals, the gap ledger updates — zero unhandled
+   exceptions.
+3. Restore the key. The next run heals automatically (idempotent capture lookbacks).
+
+## Disaster recovery (the DuckDB file is disposable)
+
+The Parquet stores are the system of record (`{data_root}/landing`, `{data_root}/events`),
+mirrored nightly to `{data_root}/backup` by `j15`. To restore:
+
+```powershell
+# If the data volume died, copy backup\landing + backup\events back first.
+Remove-Item C:\argus-data\argus.duckdb
+C:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + republish
+```
+
+## Key rotation / adding keys
+
+Edit `.env`, then `argus check` — no restart needed, every run re-reads it. After adding the
+Polygon key for the first time, run `argus bootstrap` once (the ~10y spine; refuses to run
+without the split feed).
+
+## Development
+
+```powershell
+pytest             # always offline: pytest-socket blocks the network in tests
+ruff check .
+mypy src
+```
+
+Conventions the whole codebase holds (each backed by a test):
+
+- **Two clocks** — `knowledge_time` (when the world could know) vs `written_at` (when we
+  wrote). The wall clock is read only in `core/clocks.py`.
+- **Append-only L0** — `landing/store.py` refuses overwrites; never-fetch-twice via the
+  manifest.
+- **UTC everywhere** — exchange-local time exists only in `core/calendars.py` and the PIT
+  factor logic.
+- **Every failure classified** (`ops/errors.py`) and dead-lettered; budget exhaustion is a
+  normal terminal state, not an error.

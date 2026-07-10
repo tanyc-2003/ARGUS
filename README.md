@@ -1,88 +1,127 @@
 # ARGUS
 
-Minimum-cost, PIT-correct market-data platform (Architecture v4, Tier 0) feeding the
-Market Advisory Dashboard. DuckDB + Parquet on a single machine; free sources only;
-every gap measured and disclosed instead of papered over.
+**A minimum-cost, point-in-time-correct market-data platform.**
 
-**Design docs:** `../ARGUS Architecture v4.md` (the spec) and
-`../ARGUS_Dashboard_Integration.md` (the consumer contract).
+ARGUS captures US equity market data from free sources, reconciles it across providers,
+adjusts it for corporate actions without look-ahead, and publishes a sealed, contract-checked
+DuckDB database that any downstream tool can read. It runs unattended on a single machine on
+DuckDB + Parquet — no paid data feeds — and it **measures and discloses every data gap**
+instead of papering over it.
 
-## Status
+## What it provides
 
-| Milestone | State |
-|---|---|
-| M0 — ops backbone + day-1 capture (symbol dirs, yfinance 1-min, Alpaca IEX quotes) | ✅ PR #1 |
-| M1 — daily spine + factor layer + `vw_mad_daily_ohlcv` | ✅ PR #2 |
-| M2 — nightly incrementals + revision detection (SCD-2) | ✅ PR #3 |
-| M3 — cross-source voting + replay | ✅ PR #4 |
-| M4 — survivorship (graveyard, reasons, coverage) | ✅ PR #5 |
-| M5 — intraday serving (`vw_mad_intraday`) | ✅ PR #6 |
-| M6 — parity sampling, gap ledger, sectors, chaos drills | ✅ PR #7 |
+- **PIT-correct adjusted OHLCV.** Daily open/high/low/close/volume, corporate-action-adjusted
+  using only information that was knowable at the time. A served value for a past date can never
+  change because of a later split or dividend, and ARGUS can explain any value factor by factor.
+- **Cross-source–verified data.** Every daily bar is voted on across sources (yfinance, Alpaca
+  IEX, Stooq) and graded `good` / `degraded` / `quarantined`. Nothing single-source is served
+  without being tagged; conflicting bars are quarantined, never served.
+- **Survivorship-bias-free universe.** Symbol-directory snapshots from day 1 build a forward
+  graveyard of delisted tickers with termination reasons and coverage metrics.
+- **Hybrid intraday frame.** Minute bars with real IEX best-bid/offer where available, and a
+  Corwin–Schultz synthetic spread elsewhere — every row tagged with its derivation.
+- **Sectors** mapped from SEC EDGAR (SIC → sector ETF).
+- **A gap ledger.** A published table of exactly what free data cannot buy — single-source
+  share, synthetic-spread share, coverage gaps, source outages — each with a severity.
+- **A frozen serving contract.** The published shapes are schema-checked in CI and again inside
+  the nightly publish; a regression fails inside ARGUS and can never reach a consumer.
 
-## Setup (Windows)
+## How it works, in one paragraph
+
+Every night ARGUS pulls raw payloads from free sources and lands them append-only (**L0**, never
+fetched twice). It normalizes them into an immutable Parquet event store (**L2**, the system of
+record). It votes across sources to build a canonical, revision-tracked state in DuckDB (**L3**),
+applies corporate-action factors as a point-in-time view, and materializes a **sealed serving
+database** only after it passes a byte-for-byte contract gate. The DuckDB build file is
+disposable — `argus rebuild` deterministically regenerates it by replaying the event store.
+
+```
+free sources ─▶ L0 landing ─▶ L2 events ─▶ vote + SCD-2 ─▶ canonical DuckDB
+                (append-only)  (system of    (grade + revision   │
+                               record)        history)           ▼
+                                                        PIT serving views
+                                                                 │
+                                             publish (contract gate + atomic swap)
+                                                                 ▼
+                                                    argus_serving.duckdb  ◀─ consumers read this
+```
+
+## Quick start (Windows)
 
 ```powershell
-# 1. venv OUTSIDE OneDrive (the repo is synced; runtime artifacts must not be)
+# 1. venv OUTSIDE any cloud-synced folder (the repo may be synced; runtime artifacts must not be)
 py -3.14 -m venv C:\argus-data\venv
 C:\argus-data\venv\Scripts\pip install -e ".[dev]"
 
-# 2. configure
-copy .env.example .env     # fill in Alpaca/Polygon keys; blank keys = jobs skip, not fail
+# 2. configure (blank keys mean a job SKIPS, it does not fail)
+copy .env.example .env
 
-# 3. sanity check + first run
+# 3. sanity check, build the DB, lay the deep-history spine, run a night
 C:\argus-data\venv\Scripts\argus check
 C:\argus-data\venv\Scripts\argus init-db
-C:\argus-data\venv\Scripts\argus bootstrap   # one-off daily spine (requires POLYGON key)
+C:\argus-data\venv\Scripts\argus bootstrap    # one-off; requires the Polygon key
 C:\argus-data\venv\Scripts\argus nightly
 
-# inspect PIT correctness for any (ticker, date):
-C:\argus-data\venv\Scripts\argus verify-pit --ticker AAPL --date 2020-08-28
-
-# 4. schedule (fires daily 23:45 local + at logon; idempotent per trade date)
+# 4. schedule it (daily 23:45 local + at logon; idempotent per trade date)
 .\scripts\register_scheduled_tasks.ps1 -ArgusExe C:\argus-data\venv\Scripts\argus.exe
 ```
 
-All data lands under `ARGUS_DATA_ROOT` (default `C:\argus-data`) — startup **refuses**
-a OneDrive/Dropbox path. The repo carries code only; `.gitignore` blocks `*.duckdb`.
+All data lands under `ARGUS_DATA_ROOT` (default `C:\argus-data`) — startup **refuses** a
+OneDrive/Dropbox path, because Parquet + DuckDB under a sync client risks corruption. The repo
+carries code only; `.gitignore` blocks `*.duckdb`.
 
-## Why capture starts on day 1
+## Reading the data
 
-Three feeds compound with calendar time and cannot be backfilled later:
+Point a read-only DuckDB connection at the sealed serving database:
 
-- **Symbol-directory snapshots** — the first snapshot is the forward graveyard's baseline;
-  every delisting after go-live is caught by diffing (survivorship coverage ≈ 1.0 forward).
-- **yfinance 1-minute bars** — Yahoo serves only ~30 days back; every day of delay is
-  minute history permanently lost.
-- **Alpaca IEX quotes** — friction baselines need 4–6 weeks of accrual before z-scores work.
+```python
+import duckdb
+con = duckdb.connect("C:/argus-data/argus_serving.duckdb", read_only=True)
+con.execute("SELECT * FROM vw_mad_daily_ohlcv WHERE ticker = 'AAPL' ORDER BY effective_date").pl()
+con.execute("SELECT gap_key, metric, severity FROM gap_ledger").pl()   # what the free data can't buy
+```
 
-M0 lands these raw payloads nightly (L0, append-only, never fetched twice); later
-milestones build the processing and replay it over everything accrued since day 1.
+The published tables (`vw_mad_daily_ohlcv`, `vw_mad_intraday`, `vw_mad_delisted`,
+`vw_mad_coverage`, `vw_mad_sectors`, `gap_ledger`, `serving_meta`) are a **frozen, additive-only
+contract**. See [docs/serving-contract.md](docs/serving-contract.md).
 
 ## CLI
 
 ```
 argus check        # env sanity: data root, keys, latest completed session
 argus init-db      # create data root + build DB at current schema
-argus nightly      # calendar gate -> capture jobs -> summary (idempotent)
-argus job NAME     # run one job; argus jobs-list shows names
-argus status       # recent job_runs + DLQ depth
+argus bootstrap    # one-off deep-history spine (requires Polygon key)
+argus nightly      # calendar gate -> capture -> build -> vote -> publish (idempotent)
+argus rebuild --yes    # wipe canonical tables, deterministically replay from L2
+argus verify-pit --ticker AAPL --date 2020-08-28   # show a served value's full audit trail
+argus status       # recent job runs + DLQ depth
 argus dlq-list     # open dead-letter entries
+argus jobs-list    # nightly jobs in execution order
 ```
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [Architecture](docs/architecture.md) | Layered design, the two-clock model, core principles. |
+| [Data flow & pipeline](docs/pipeline.md) | The nightly job registry, idempotency, bootstrap, rebuild. |
+| [Sources & voting](docs/sources-and-voting.md) | The free sources and how disagreements are resolved. |
+| [Point-in-time correctness](docs/point-in-time.md) | Two clocks, SCD-2 history, corporate-action adjustment. |
+| [Data model](docs/data-model.md) | Every table and view; the L0/L2 Parquet layouts. |
+| [Serving contract](docs/serving-contract.md) | The frozen published shapes, the gate, atomic publish. |
+| [Reliability & operations](docs/reliability.md) | Budgets, circuit breakers, DLQ, chaos drills, gap ledger. |
+| [Setup & runbook](docs/operations.md) | Install, configure, schedule, health checks, recovery. |
 
 ## Development
 
 ```powershell
-pytest             # offline always: pytest-socket blocks the network in tests
+pytest             # always offline: pytest-socket blocks the network in tests
 ruff check .
 mypy src
 ```
 
-Conventions the whole codebase holds:
+## Tech stack
 
-- **Two clocks**: `knowledge_time` (when the world could know) vs `written_at` (when we
-  wrote). Wall-clock reads only in `core/clocks.py` — a test enforces this.
-- **Append-only L0**: `landing/store.py` refuses overwrites; never-fetch-twice via the
-  manifest.
-- **UTC everywhere**; exchange-local time exists only in `core/calendars.py`.
-- **Every failure classified** (`ops/errors.py`) and dead-lettered; budget exhaustion is
-  a normal terminal state, not an error.
+Python 3.11+ · DuckDB · Polars · PyArrow · Pydantic · Typer · httpx · structlog ·
+exchange-calendars. Sources: yfinance, Alpaca (IEX), Polygon, SEC EDGAR, Stooq, NASDAQ symbol
+directories.
