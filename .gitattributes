@@ -1,0 +1,32 @@
+# Normalize line endings: store text as LF in the repo and check out LF on every
+# platform. This keeps diffs clean and stops Windows CRLF<->LF churn warnings.
+* text=auto eol=lf
+
+# Explicitly text (belt-and-suspenders for the file types in this repo)
+*.py    text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.env   text eol=lf
+
+# PowerShell / Windows scripts conventionally use CRLF
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary / generated artifacts — never touch line endings or diff as text
+*.duckdb  binary
+*.parquet binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.zip     binary
+*.gz      binary
