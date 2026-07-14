@@ -20,11 +20,19 @@ param(
 
     # repo root: argus resolves config/ relative to its working directory, and
     # Task Scheduler defaults to System32 — this MUST be set or capture jobs
-    # fail with FileNotFoundError (found the hard way on the first real night)
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    # fail with FileNotFoundError (found the hard way on the first real night).
+    # Resolved in the body below, NOT as a param default: a $PSScriptRoot
+    # reference in a default is empty when a Mandatory parameter precedes it
+    # (PowerShell evaluates the default before $PSScriptRoot is populated),
+    # which made Split-Path throw "empty string" and aborted the whole script.
+    [string]$RepoRoot,
 
     [string]$NightlyTime = "23:45"
 )
+
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $PSScriptRoot
+}
 
 if (-not (Test-Path $ArgusExe)) {
     throw "argus executable not found at '$ArgusExe' - create the venv and 'pip install -e .' first."
