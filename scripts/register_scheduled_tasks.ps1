@@ -41,7 +41,10 @@ $nightlyTrigger = New-ScheduledTaskTrigger -Daily -At $NightlyTime
 Register-ScheduledTask -TaskName "ARGUS Nightly" -Action $action -Trigger $nightlyTrigger `
     -Settings $settings -Description "ARGUS nightly data pipeline (idempotent per trade date)" -Force
 
-$logonTrigger = New-ScheduledTaskTrigger -AtLogOn
+# -AtLogOn with no -User means "any user logon", which is an all-users task and
+# requires elevation to register; scoping it to the current user keeps it a
+# per-user task (no elevation), matching the Nightly trigger and this script's intent.
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 Register-ScheduledTask -TaskName "ARGUS Catch-up" -Action $action -Trigger $logonTrigger `
     -Settings $settings -Description "ARGUS catch-up run after sleep/reboot (no-op if already sealed)" -Force
 
