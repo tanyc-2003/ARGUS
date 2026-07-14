@@ -84,6 +84,8 @@ def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
 
     landed = 0
     skipped = 0
+    drifted = 0
+    last_drift: SchemaDrift | None = None
     try:
         for ticker in watchlist:
             for session_date in session_dates:
@@ -94,7 +96,19 @@ def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
                 session = calendars.session_info(session_date)
                 if session is None:  # defensive; previous_sessions only yields sessions
                     continue
-                quotes = _fetch_session_quotes(client, ticker, session)
+                try:
+                    quotes = _fetch_session_quotes(client, ticker, session)
+                except SchemaDrift as exc:
+                    # one ticker/session blowing past the page cap (SPY's IEX quote
+                    # volume routinely does) must not kill every other ticker in the
+                    # watchlist — count it and move on, matching stooq.capture's
+                    # per-ticker containment; systemic drift still fails loudly below
+                    drifted += 1
+                    last_drift = exc
+                    ctx.log.warning(
+                        "alpaca_quotes_drifted", ticker=ticker, session=session_date.isoformat()
+                    )
+                    continue
                 body = {
                     "ticker": ticker,
                     "session": session_date.isoformat(),
@@ -114,10 +128,14 @@ def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
     except TransportFailure:
         health.record_failure(ctx.conn, SOURCE)
         raise
+    if drifted and landed == 0 and skipped == 0:
+        health.record_failure(ctx.conn, SOURCE)
+        assert last_drift is not None
+        raise last_drift  # every single session was bad — that IS schema drift
     health.record_success(ctx.conn, SOURCE)
     return JobResult(
         rows_out=landed, budget_used=budget.used,
-        detail=f"landed={landed} already={skipped}",
+        detail=f"landed={landed} already={skipped} drifted={drifted}",
     )
 
 
