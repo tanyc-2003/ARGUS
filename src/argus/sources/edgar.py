@@ -53,7 +53,10 @@ def _tickers_missing_sector(ctx: JobContext) -> list[str]:
 
 
 def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
-    budget = RunBudget(SOURCE, 100)
+    # 1 call per universe ticker still missing a sector, +1 for the ticker map.
+    # Must clear the universe size: at 112 names (2026-07) the old 100 could not
+    # even cover a first pass, so the last names silently never got a sector.
+    budget = RunBudget(SOURCE, 250)
     client = client or _client(ctx, budget)
 
     landed = 0

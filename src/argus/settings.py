@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     edgar_user_agent: str = ""
 
     # nightly per-source call budgets (calls per run); buckets enforce the per-second rate
-    polygon_nightly_budget: int = 120
+    # j06 polygon_ca costs 1 call per UNIVERSE ticker, so this must clear the
+    # universe size with room to grow: 112 names (2026-07) against the old 120
+    # left 8 spare, i.e. one more ticker away from silent partial coverage.
+    # Polygon's free tier is 5 calls/min, so a full universe pass is ~22 min.
+    polygon_nightly_budget: int = 200
     yfinance_nightly_budget: int = 600
     # Alpaca quote ticks paginate at 10k/call, so one liquid name costs 230-340
     # calls for a busy session (measured 2026-07: QQQ 3.38M quotes = 339 calls).

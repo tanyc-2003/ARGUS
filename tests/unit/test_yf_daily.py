@@ -43,6 +43,67 @@ def test_capture_lands_one_payload_per_ticker(ctx) -> None:
     assert second.rows_out == 0 and second.budget_used == 0
 
 
+def _add_ticker(ctx, ticker: str) -> None:
+    """Simulate the user editing universe.yaml after ARGUS is already running."""
+    path = ctx.settings.config_dir / "universe.yaml"
+    path.write_text(path.read_text(encoding="utf-8") + f"  - {{ticker: {ticker}, role: sp100}}\n",
+                    encoding="utf-8")
+
+
+def test_backfill_pulls_deep_history_only_for_new_tickers(ctx) -> None:
+    """Edit universe.yaml after setup -> the new name gets its full history, and
+    the already-bootstrapped names are not re-fetched or rewritten."""
+    yf_daily.capture_history(ctx, downloader=lambda t, s, e: _pd_frame(), bucket=_fast_bucket())
+    _add_ticker(ctx, "NVDA")
+
+    seen: list[tuple[str, date]] = []
+
+    def downloader(t: str, s: date, e: date) -> pd.DataFrame:
+        seen.append((t, s))
+        return _pd_frame()
+
+    result = yf_daily.backfill_new_tickers(ctx, downloader=downloader, bucket=_fast_bucket())
+
+    assert [t for t, _ in seen] == ["NVDA"]  # SPY/AAPL untouched — old data left alone
+    assert seen[0][1] == yf_daily.HISTORY_START  # full depth, not the 12-day window
+    assert result.rows_out == 1
+
+
+def test_backfill_is_a_noop_once_every_ticker_has_history(ctx) -> None:
+    """Runs every night, so it must cost nothing when nothing was added."""
+    yf_daily.capture_history(ctx, downloader=lambda t, s, e: _pd_frame(), bucket=_fast_bucket())
+    calls: list[str] = []
+
+    def downloader(t: str, s: date, e: date) -> pd.DataFrame:
+        calls.append(t)
+        return _pd_frame()
+
+    result = yf_daily.backfill_new_tickers(ctx, downloader=downloader, bucket=_fast_bucket())
+    assert calls == [] and result.rows_out == 0 and result.budget_used == 0
+
+
+def test_backfill_does_not_refetch_on_a_later_trade_date(ctx) -> None:
+    """The history key carries the trade date, so 'already has history' must be
+    matched on the ticker — not the key — or every night would re-pull 36 years."""
+    _add_ticker(ctx, "NVDA")
+    yf_daily.backfill_new_tickers(ctx, downloader=lambda t, s, e: _pd_frame(),
+                                  bucket=_fast_bucket())
+    ctx.trade_date = ctx.trade_date + timedelta(days=1)  # next night
+
+    calls: list[str] = []
+    result = yf_daily.backfill_new_tickers(
+        ctx, downloader=lambda t, s, e: (calls.append(t), _pd_frame())[1], bucket=_fast_bucket()
+    )
+    assert calls == [] and result.rows_out == 0
+
+
+def test_nightly_incrementals_still_cover_a_new_ticker(ctx) -> None:
+    """Backfill handles depth; j02 must still pick the new name up day-to-day."""
+    _add_ticker(ctx, "NVDA")
+    result = yf_daily.capture(ctx, downloader=lambda t, s, e: _pd_frame(), bucket=_fast_bucket())
+    assert result.rows_out == 3  # SPY + AAPL + NVDA
+
+
 def test_capture_window_covers_revision_days(ctx) -> None:
     windows: list[tuple[date, date]] = []
 
