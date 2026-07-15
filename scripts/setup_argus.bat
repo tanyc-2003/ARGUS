@@ -8,7 +8,8 @@ REM    1. Picks a DATA ROOT (where argus.duckdb + parquet + logs + the venv live
 REM       You choose the drive/folder - e.g. D:\argus-data instead of C:\argus-data.
 REM    2. Writes that location into .env as ARGUS_DATA_ROOT (only that line is
 REM       touched; your API keys and everything else are left as-is).
-REM    3. Creates a Python venv under <data root>\venv and pip-installs the repo.
+REM    3. Creates a Python venv under <data root>\venv and pip-installs the repo
+REM       with its [dev] extras (pytest/ruff/mypy — the verify loop runs from there).
 REM    4. Runs `argus init-db` to create the schema, then `argus check`.
 REM
 REM  Assumes .env already exists and is populated correctly (API keys etc.).
@@ -149,9 +150,12 @@ set "VPY=%VENV%\Scripts\python.exe"
 REM --- install ARGUS (editable) ----------------------------------------------
 echo Upgrading pip ...
 "%VPY%" -m pip install --upgrade pip >nul || (echo [ERROR] pip upgrade failed. & goto :fail)
-echo Installing ARGUS (editable) - this can take a couple of minutes ...
+REM [dev] pulls pytest/ruff/mypy too: the verify loop runs out of this venv
+REM (D:\argus-data\venv\Scripts\pytest.exe), so a runtime-only install leaves the
+REM repo untestable on a fresh machine.
+echo Installing ARGUS + dev tools (editable) - this can take a couple of minutes ...
 pushd "%REPO_ROOT%"
-"%VPY%" -m pip install -e . || (popd & echo [ERROR] pip install failed. & goto :fail)
+"%VPY%" -m pip install -e ".[dev]" || (popd & echo [ERROR] pip install failed. & goto :fail)
 popd
 
 REM --- initialise the database + smoke check ----------------------------------
