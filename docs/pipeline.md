@@ -57,6 +57,7 @@ and canonicalize it, seals project it, and publish seals the night.
 | `j01_symbol_dirs` | capture | NASDAQ/other listed symbol directory snapshots (survivorship baseline). |
 | `j02_yf_daily` | capture | yfinance daily bars (primary consolidated spine). |
 | `j02b_stooq_monthly` | capture (monthly gate) | Full-history Stooq re-pull every ~28 days; silent vendor rewrites surface as SCD-2 revisions. |
+| `j02c_yf_backfill` | capture | Deep history for tickers newly added to `universe.yaml`; no-op once each has its spine. |
 | `j03_alpaca_daily` | capture | Alpaca daily bars (IEX). |
 | `j04_yf_minute` | capture | yfinance 1-minute bars (Yahoo serves only ~30 days back). |
 | `j05_alpaca_quotes` | capture | Alpaca IEX quotes → minute BBO buckets (friction baselines). |
@@ -87,6 +88,23 @@ Some jobs should not run every night. They gate on the last genuinely-run succes
   by trade date, so a forced re-run compares the same bars. It is a **drift alarm**, not a
   parity target: sustained divergence *demotes a source in the voting priority*, it never
   rewrites ARGUS data.
+
+## Growing the universe (`j02c_yf_backfill`)
+
+`b01_yf_history` runs only under `argus bootstrap`, so a ticker **added to `universe.yaml`
+afterwards** would otherwise accrue nothing but the rolling 12-day `j02` window — no deep
+spine, ever, and no error to say so. `j02c_yf_backfill` closes that: every night it looks for
+universe names with **no history payload** and pulls their full archive once.
+
+- **Existing tickers are untouched** — their data is never re-fetched or rewritten.
+- "Has history" is matched on the **ticker**, not the request_key: the key carries the trade
+  date, so keying on it would re-pull the whole archive every night.
+- It runs **before `j08`/`j09`**, so a new ticker's deep history is split-reversed against the
+  corporate actions `j06` lands the same night.
+- Costs 1 call per *new* ticker and nothing at all once the universe is stable.
+
+So the supported workflow is simply: edit `config/universe.yaml`, and let the next night
+converge. No re-bootstrap, no wipe.
 
 ## The bootstrap (`orchestration/nightly.py::bootstrap_registry`)
 

@@ -59,7 +59,7 @@ Point a read-only DuckDB connection at the file and query the `vw_mad_*` tables:
 ```python
 import duckdb
 
-con = duckdb.connect("C:/argus-data/argus_serving.duckdb", read_only=True)
+con = duckdb.connect("D:/argus-data/argus_serving.duckdb", read_only=True)
 
 # PIT-adjusted daily OHLCV
 df = con.execute("SELECT * FROM vw_mad_daily_ohlcv WHERE ticker = 'AAPL' ORDER BY effective_date").pl()

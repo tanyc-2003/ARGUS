@@ -6,49 +6,82 @@ It runs on a single machine with a local data volume.
 ## Install
 
 ```powershell
-# 1. Create the venv OUTSIDE any cloud-synced folder.
-#    (The repo may live in OneDrive; runtime artifacts must not.)
-py -3.14 -m venv C:\argus-data\venv
-C:\argus-data\venv\Scripts\pip install -e ".[dev]"
-
-# 2. Configure.
+# 1. Configure first — setup reads .env to find (or set) your data root.
 copy .env.example .env      # fill in keys; a blank key means the job SKIPS, it does not fail
 
-# 3. Sanity check + build the database.
-C:\argus-data\venv\Scripts\argus check
-C:\argus-data\venv\Scripts\argus init-db
+# 2. One-shot setup.
+.\scripts\setup_argus.bat              # prompts for the data root
+.\scripts\setup_argus.bat D:\argus-data   # or pass it non-interactively
 ```
+
+`setup_argus.bat` does the whole install: it takes the **data root** (where `argus.duckdb`,
+Parquet, logs and the venv all live — pick any local disk, e.g. `D:\`), writes it into `.env` as
+`ARGUS_DATA_ROOT` *without touching your keys*, creates the venv under it, `pip install -e
+".[dev]"` (the `[dev]` extras matter — the verify loop runs out of this venv), runs `init-db`,
+and offers the one-off `argus bootstrap` when a Polygon key is present.
+
+It is **safe to re-run**: an existing venv is reused, `init-db` only applies missing migrations
+(never wipes), and it warns before repointing `.env` at a *different* data root. It refuses a
+OneDrive/Dropbox/GDrive path up front, mirroring the guard in `settings.py`.
+
+<details>
+<summary>Manual install, if you prefer</summary>
+
+```powershell
+py -3.14 -m venv D:\argus-data\venv       # OUTSIDE any cloud-synced folder
+D:\argus-data\venv\Scripts\pip install -e ".[dev]"
+copy .env.example .env                     # set ARGUS_DATA_ROOT=D:\argus-data
+D:\argus-data\venv\Scripts\argus check
+D:\argus-data\venv\Scripts\argus init-db
+```
+</details>
 
 ### Environment (`.env`, all vars prefixed `ARGUS_`)
 
 | Variable | Needed for | Blank behavior |
 |---|---|---|
-| `ARGUS_DATA_ROOT` | Everything (default `C:\argus-data`) | Must be **outside** OneDrive/Dropbox/GDrive — startup refuses a synced path unless `ARGUS_ALLOW_SYNCED_DATA_ROOT=1`. |
+| `ARGUS_DATA_ROOT` | Everything (code default `C:\argus-data`; `setup_argus.bat` sets it for you) | Must be **outside** OneDrive/Dropbox/GDrive — startup refuses a synced path unless `ARGUS_ALLOW_SYNCED_DATA_ROOT=1`. |
 | `ARGUS_ALPACA_KEY_ID` / `ARGUS_ALPACA_SECRET_KEY` | Alpaca IEX daily bars + quotes (`j03`, `j05`) | Those jobs skip cleanly. |
 | `ARGUS_POLYGON_API_KEY` | Corporate actions, delisted ref, parity, and **`bootstrap`** | Corporate-action jobs skip; `bootstrap` **refuses** to run. |
 | `ARGUS_EDGAR_USER_AGENT` | SEC EDGAR (sectors, delisting reasons) | EDGAR job skips. Must be a descriptive UA with contact info (EDGAR fair-access policy). |
 
-Nightly per-source call budgets are also configurable (`ARGUS_POLYGON_NIGHTLY_BUDGET`, etc.);
-defaults are in `settings.py`.
+Nightly per-source call budgets are also configurable (`ARGUS_POLYGON_NIGHTLY_BUDGET`,
+`ARGUS_YFINANCE_NIGHTLY_BUDGET`, `ARGUS_ALPACA_NIGHTLY_BUDGET`); defaults are in `settings.py`
+and are sized in [Reliability](reliability.md#rate-discipline-buckets--budgets-opsratelimitpy).
+An env var **overrides** the default, so a budget pinned in `.env` will silently keep an old
+ceiling after an upgrade — check with `argus check` if a job exhausts unexpectedly.
+
+## Choosing what ARGUS tracks
+
+Edit **`config/universe.yaml`** (the daily spine; ships with 10 factor ETFs + 102 S&P 100
+names). You can edit it before setup, or at any time afterwards:
+
+- **Added** ticker → the next nightly pulls its **full deep history** once (`j02c_yf_backfill`).
+  Existing tickers are never re-fetched or rewritten. No re-bootstrap needed.
+- **Removed** ticker → stops accruing; its history is kept.
+
+Use the canonical dotted form for share classes (`BRK.B`, not `BRK-B`) — adapters re-spell per
+vendor. **`config/watchlist.yaml`** is the separate intraday subset; keep it small (it costs
+120–340 API calls *per ticker per session*, versus ~1/night for the universe).
 
 ## First run
 
 ```powershell
 # One-off deep-history spine (requires the Polygon key). ~8 minutes of rate-limited drip.
-C:\argus-data\venv\Scripts\argus bootstrap
+D:\argus-data\venv\Scripts\argus bootstrap
 
 # A normal night.
-C:\argus-data\venv\Scripts\argus nightly
+D:\argus-data\venv\Scripts\argus nightly
 
 # Explain how any served value was built, factor by factor.
-C:\argus-data\venv\Scripts\argus verify-pit --ticker AAPL --date 2020-08-28
+D:\argus-data\venv\Scripts\argus verify-pit --ticker AAPL --date 2020-08-28
 ```
 
 ## Schedule it
 
 ```powershell
 # Fires daily 23:45 local + at every logon; idempotent per trade date.
-.\scripts\register_scheduled_tasks.ps1 -ArgusExe C:\argus-data\venv\Scripts\argus.exe
+.\scripts\register_scheduled_tasks.ps1 -ArgusExe D:\argus-data\venv\Scripts\argus.exe
 ```
 
 This registers two Windows scheduled tasks (both `StartWhenAvailable` + `WakeToRun`, so a
@@ -64,6 +97,17 @@ The tasks set the **repo as the working directory** — this is required, becaus
 (capture jobs would fail with `FileNotFoundError`). Double-firing is safe: jobs are idempotent
 per trade date and a concurrent instance bows out on the DuckDB lock.
 
+Both are registered as **per-user** tasks, so no elevated shell is needed. The logon trigger is
+deliberately scoped to the current user: a bare `-AtLogOn` registers an *any-user* task, which
+requires elevation and otherwise fails with `Access is denied` — leaving Nightly registered and
+Catch-up silently missing.
+
+Verify both exist:
+
+```powershell
+Get-ScheduledTask | Where-Object TaskName -like "ARGUS*" | Select-Object TaskName, State
+```
+
 ## The CLI
 
 | Command | Purpose |
@@ -78,13 +122,13 @@ per trade date and a concurrent instance bows out on the DuckDB lock.
 | `argus verify-pit --ticker T --date YYYY-MM-DD` | Show the full PIT audit trail for a served value. |
 | `argus status [--limit N]` | Recent `job_runs` + open DLQ depth. |
 | `argus dlq-list [--limit N]` | Open dead-letter entries. |
-| `argus dlq-resolve ID` | Mark a dead-letter entry resolved. |
+| `argus dlq-resolve ID` | Mark a dead-letter entry resolved. For a `source_oversized` entry this also **re-arms the fetch** — the pair is skipped while the entry is open. |
 
 ## Daily health check (30 seconds)
 
 ```powershell
-C:\argus-data\venv\Scripts\argus status      # last night's job statuses + DLQ depth
-C:\argus-data\venv\Scripts\argus dlq-list     # anything open needs a look
+D:\argus-data\venv\Scripts\argus status      # last night's job statuses + DLQ depth
+D:\argus-data\venv\Scripts\argus dlq-list     # anything open needs a look
 ```
 
 A healthy night: every job is `ok`, `skipped_already_done`, `skipped_source_down` (keys not
@@ -116,8 +160,8 @@ mirrored nightly to `{data_root}/backup` by `j15`. To restore:
 
 ```powershell
 # If the data volume died, copy backup\landing + backup\events back first.
-Remove-Item C:\argus-data\argus.duckdb
-C:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + republish
+Remove-Item D:\argus-data\argus.duckdb
+D:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + republish
 ```
 
 ## Key rotation / adding keys

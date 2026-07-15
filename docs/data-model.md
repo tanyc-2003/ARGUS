@@ -109,7 +109,23 @@ serving *tables* deliberately — the names are part of the contract.
 
 YAML loaded from the working directory (or `ARGUS_CONFIG_DIR`):
 
-- **`universe.yaml`** — the tickers ARGUS tracks (`ticker`, `role`).
-- **`watchlist.yaml`** — the watchlist subset.
+- **`universe.yaml`** — the tickers ARGUS tracks (`ticker`, `role`); the **R1 daily spine** and
+  the file users are expected to edit. Ships with 10 macro-factor ETFs (`role: factor_etf`, the
+  dashboard's fixed proxies) + 102 S&P 100 names (`role: sp100`). `role` is metadata only —
+  nothing branches on it. Costs ~1 call per ticker per night per source. Add a ticker and the
+  next nightly backfills its full deep history once (`j02c_yf_backfill`, see
+  [pipeline](pipeline.md#growing-the-universe-j02c_yf_backfill)); remove one and it stops
+  accruing while keeping its history.
+- **`watchlist.yaml`** — the **R2 intraday** subset (minute bars + IEX quotes), a plain ticker
+  list. Deliberately small and *not* the universe: quote capture costs **120–340 calls per
+  ticker per session** (~1 GB/session at 110 names), versus ~1 call/ticker/night for the
+  universe. Keep it curated.
 - **`sic_sector_map.yaml`** — `(lo, hi, sector_etf)` SIC ranges, first match wins, for the
   sector mapping.
+
+### Ticker spelling
+
+Tickers are stored in the **canonical dotted form** for share classes (`BRK.B`). Vendors
+disagree on this and no single spelling works everywhere: Alpaca and Polygon serve `BRK.B` and
+reject `BRK-B`; Yahoo is the exact opposite. Adapters re-spell for their own vendor
+(`sources/_yf.py::yahoo_symbol`), so config stays vendor-neutral.
