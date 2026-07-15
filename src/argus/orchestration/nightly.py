@@ -29,6 +29,10 @@ def build_registry() -> list[JobSpec]:
         JobSpec("j01_symbol_dirs", symbol_dirs.capture),
         JobSpec("j02_yf_daily", yf_daily.capture),
         JobSpec("j02b_stooq_monthly", trust_jobs.stooq_monthly),  # monthly re-pull gate
+        # deep history for names newly added to universe.yaml; no-op once each
+        # has its spine. Must precede j08/j09 so the new history is split-
+        # reversed against the corporate actions j06 lands the same night.
+        JobSpec("j02c_yf_backfill", yf_daily.backfill_new_tickers),
         JobSpec("j03_alpaca_daily", alpaca.capture_daily_bars),
         JobSpec("j04_yf_minute", yf_minute.capture),
         JobSpec(alpaca.QUOTES_JOB, alpaca.capture),

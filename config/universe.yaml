@@ -1,7 +1,26 @@
-# Daily-spine universe (R1). Grows toward ~100+ names over milestones.
-# role: factor_etf entries are the dashboard's 10 macro-factor proxies and must never be removed.
+# ARGUS universe (R1 daily spine) — THE file to edit to choose what ARGUS tracks.
+#
+# Add or remove tickers here, then just run ARGUS. On the next nightly run:
+#   * a ticker you ADDED is detected by j02c_yf_backfill, which pulls its full
+#     deep history (back to 1990) once. Existing tickers are never re-fetched
+#     or rewritten — their data is left exactly as it is.
+#   * a ticker you REMOVED simply stops accruing. Its history is kept.
+# No re-bootstrap, no wipe, no manual step. Editing before first setup is fine too.
+#
+# Ticker format: use the canonical DOTTED form for share classes (BRK.B, not
+# BRK-B). Alpaca/Polygon want dots; the yfinance adapter re-spells it (_yf.py).
+#
+# COST: this file is the DAILY spine — roughly 1 API call per ticker per night,
+# so it scales cheaply. Do NOT paste this list into watchlist.yaml: that one
+# drives intraday tick capture at ~120-340 calls per ticker per session
+# (~1 GB/session for 110 names). Keep the watchlist a small curated subset.
+#
+# Every ticker below was verified to return data from BOTH Alpaca and yfinance
+# on 2026-07-15. Index membership itself is NOT machine-verified — reconcile
+# against an official S&P 100 source if exact membership matters to you.
 tickers:
-  # 10 factor ETFs (dashboard MACRO_FACTOR_PROXIES - fixed set)
+  # ---- 10 macro-factor ETFs (dashboard MACRO_FACTOR_PROXIES — fixed set,
+  #      must never be removed) ----
   - {ticker: SPY, role: factor_etf}
   - {ticker: TLT, role: factor_etf}
   - {ticker: HYG, role: factor_etf}
@@ -12,9 +31,106 @@ tickers:
   - {ticker: DBC, role: factor_etf}
   - {ticker: SVXY, role: factor_etf}
   - {ticker: SMH, role: factor_etf}
-  # seed mega-caps (mirrors the dashboard's current default universe)
-  - {ticker: AAPL, role: seed}
-  - {ticker: MSFT, role: seed}
-  - {ticker: NVDA, role: seed}
-  - {ticker: GOOGL, role: seed}
-  - {ticker: AMZN, role: seed}
+  # ---- S&P 100 constituents (102 names) ----
+  - {ticker: AAPL, role: sp100}
+  - {ticker: ABBV, role: sp100}
+  - {ticker: ABT, role: sp100}
+  - {ticker: ACN, role: sp100}
+  - {ticker: ADBE, role: sp100}
+  - {ticker: AIG, role: sp100}
+  - {ticker: AMD, role: sp100}
+  - {ticker: AMGN, role: sp100}
+  - {ticker: AMT, role: sp100}
+  - {ticker: AMZN, role: sp100}
+  - {ticker: AVGO, role: sp100}
+  - {ticker: AXP, role: sp100}
+  - {ticker: BA, role: sp100}
+  - {ticker: BAC, role: sp100}
+  - {ticker: BKNG, role: sp100}
+  - {ticker: BLK, role: sp100}
+  - {ticker: BMY, role: sp100}
+  - {ticker: BNY, role: sp100}
+  - {ticker: BRK.B, role: sp100}
+  - {ticker: C, role: sp100}
+  - {ticker: CAT, role: sp100}
+  - {ticker: CHTR, role: sp100}
+  - {ticker: CL, role: sp100}
+  - {ticker: CMCSA, role: sp100}
+  - {ticker: COF, role: sp100}
+  - {ticker: COP, role: sp100}
+  - {ticker: COST, role: sp100}
+  - {ticker: CRM, role: sp100}
+  - {ticker: CSCO, role: sp100}
+  - {ticker: CVS, role: sp100}
+  - {ticker: CVX, role: sp100}
+  - {ticker: DE, role: sp100}
+  - {ticker: DHR, role: sp100}
+  - {ticker: DIS, role: sp100}
+  - {ticker: DOW, role: sp100}
+  - {ticker: DUK, role: sp100}
+  - {ticker: EMR, role: sp100}
+  - {ticker: EXC, role: sp100}
+  - {ticker: F, role: sp100}
+  - {ticker: FDX, role: sp100}
+  - {ticker: GD, role: sp100}
+  - {ticker: GE, role: sp100}
+  - {ticker: GILD, role: sp100}
+  - {ticker: GM, role: sp100}
+  - {ticker: GOOG, role: sp100}
+  - {ticker: GOOGL, role: sp100}
+  - {ticker: GS, role: sp100}
+  - {ticker: HD, role: sp100}
+  - {ticker: HON, role: sp100}
+  - {ticker: IBM, role: sp100}
+  - {ticker: INTC, role: sp100}
+  - {ticker: INTU, role: sp100}
+  - {ticker: JNJ, role: sp100}
+  - {ticker: JPM, role: sp100}
+  - {ticker: KHC, role: sp100}
+  - {ticker: KO, role: sp100}
+  - {ticker: LIN, role: sp100}
+  - {ticker: LLY, role: sp100}
+  - {ticker: LMT, role: sp100}
+  - {ticker: LOW, role: sp100}
+  - {ticker: MA, role: sp100}
+  - {ticker: MCD, role: sp100}
+  - {ticker: MDLZ, role: sp100}
+  - {ticker: MDT, role: sp100}
+  - {ticker: MET, role: sp100}
+  - {ticker: META, role: sp100}
+  - {ticker: MMM, role: sp100}
+  - {ticker: MO, role: sp100}
+  - {ticker: MRK, role: sp100}
+  - {ticker: MS, role: sp100}
+  - {ticker: MSFT, role: sp100}
+  - {ticker: NEE, role: sp100}
+  - {ticker: NFLX, role: sp100}
+  - {ticker: NKE, role: sp100}
+  - {ticker: NVDA, role: sp100}
+  - {ticker: ORCL, role: sp100}
+  - {ticker: PEP, role: sp100}
+  - {ticker: PFE, role: sp100}
+  - {ticker: PG, role: sp100}
+  - {ticker: PM, role: sp100}
+  - {ticker: PYPL, role: sp100}
+  - {ticker: QCOM, role: sp100}
+  - {ticker: RTX, role: sp100}
+  - {ticker: SBUX, role: sp100}
+  - {ticker: SCHW, role: sp100}
+  - {ticker: SO, role: sp100}
+  - {ticker: SPG, role: sp100}
+  - {ticker: T, role: sp100}
+  - {ticker: TGT, role: sp100}
+  - {ticker: TMO, role: sp100}
+  - {ticker: TMUS, role: sp100}
+  - {ticker: TSLA, role: sp100}
+  - {ticker: TXN, role: sp100}
+  - {ticker: UNH, role: sp100}
+  - {ticker: UNP, role: sp100}
+  - {ticker: UPS, role: sp100}
+  - {ticker: USB, role: sp100}
+  - {ticker: V, role: sp100}
+  - {ticker: VZ, role: sp100}
+  - {ticker: WFC, role: sp100}
+  - {ticker: WMT, role: sp100}
+  - {ticker: XOM, role: sp100}

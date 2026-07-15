@@ -35,16 +35,19 @@ Downloader = Callable[[str, date, date], Any]  # (ticker, start, end) -> pandas 
 def _default_downloader(ticker: str, start: date, end: date) -> Any:
     import yfinance as yf
 
-    return yf.download(
-        ticker,
-        start=start.isoformat(),
-        end=end.isoformat(),
-        interval="1d",
-        auto_adjust=False,
-        actions=False,
-        progress=False,
-        threads=False,
-    )
+    from argus.sources._yf import quiet_vendor_deprecations, yahoo_symbol
+
+    with quiet_vendor_deprecations():
+        return yf.download(
+            yahoo_symbol(ticker),
+            start=start.isoformat(),
+            end=end.isoformat(),
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            progress=False,
+            threads=False,
+        )
 
 
 def _to_parquet_bytes(df: Any) -> bytes:
@@ -82,6 +85,42 @@ def capture_history(
     )
 
 
+def backfill_new_tickers(
+    ctx: JobContext,
+    downloader: Downloader | None = None,
+    bucket: TokenBucket | None = None,
+) -> JobResult:
+    """Deep history for universe names that have never had any (j02c, nightly).
+
+    b01_yf_history only runs under `argus bootstrap`, so a ticker ADDED to
+    universe.yaml afterwards would silently accrue nothing but the rolling
+    12-day nightly window — no 10y spine, forever. This finds names with no
+    history payload and backfills them; already-bootstrapped tickers are left
+    completely untouched (their existing data is never re-fetched or rewritten).
+
+    Runs before j08/j09 in the nightly, so a new ticker's deep history is split-
+    reversed against the corporate actions j06 lands the same night.
+    """
+    return _capture_window(
+        ctx, HISTORY_START, downloader=downloader, bucket=bucket,
+        key_tag="history:", only_without_history=True,
+    )
+
+
+def _has_history(ctx: JobContext, ticker: str) -> bool:
+    """Has this ticker ever had a deep-history payload landed?
+
+    The manifest is the record of what we already hold, so it is also the
+    cheapest answer to 'is this name new?' — no extra state to drift.
+    """
+    row = ctx.conn.execute(
+        "SELECT 1 FROM landing_manifest WHERE dataset = ? AND source = ? "
+        "AND request_key LIKE ? LIMIT 1",
+        [DATASET, SOURCE, f"{ticker}:history:%"],
+    ).fetchone()
+    return row is not None
+
+
 def _capture_window(
     ctx: JobContext,
     start: date,
@@ -89,6 +128,7 @@ def _capture_window(
     downloader: Downloader | None,
     bucket: TokenBucket | None,
     key_tag: str,
+    only_without_history: bool = False,
 ) -> JobResult:
     if health.is_open(ctx.conn, SOURCE):
         raise SourceDown(f"{SOURCE}: circuit open", source=SOURCE)
@@ -104,6 +144,9 @@ def _capture_window(
     empty = 0
     for row in load_universe(ctx.settings):
         ticker = row["ticker"]
+        if only_without_history and _has_history(ctx, ticker):
+            skipped += 1  # already has its spine — never re-fetch or rewrite it
+            continue
         # the trade-date suffix keeps history payloads visible to the same
         # per-trade-date build queue as the nightly incrementals
         request_key = f"{ticker}:{key_tag}{ctx.trade_date.isoformat()}"

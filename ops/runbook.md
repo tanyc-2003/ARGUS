@@ -3,8 +3,8 @@
 ## Daily health check (30 seconds)
 
 ```powershell
-C:\argus-data\venv\Scripts\argus status      # last night's job statuses + DLQ depth
-C:\argus-data\venv\Scripts\argus dlq-list    # anything open needs a look
+D:\argus-data\venv\Scripts\argus status      # last night's job statuses + DLQ depth
+D:\argus-data\venv\Scripts\argus dlq-list    # anything open needs a look
 ```
 
 A healthy night: every job `ok` / `skipped_already_done` / `skipped_source_down`
@@ -23,6 +23,14 @@ A healthy night: every job `ok` / `skipped_already_done` / `skipped_source_down`
 - `source_schema_drift`: a vendor changed shape. Inspect the landed payload at
   the path in the entry; fix the normalizer; re-run the build job with
   `argus job <name> --force`. Then `argus dlq-resolve <id>`.
+- `source_oversized`: one (ticker, session) paginated past the page cap. NOT a
+  vendor problem — the response is just bigger than we page. The pair is
+  skipped while the entry is open, on purpose: retrying it costs a full page
+  cap of calls *every night, forever*. If the volume is legitimate, raise
+  `alpaca.MAX_PAGES_PER_SESSION` (check the budget clears it too), then
+  `argus dlq-resolve <id>` to re-arm the fetch. Repeated entries for the same
+  liquid names mean the cap is now under real volume — size it well above, not
+  near, since a too-low cap hides the very sessions that prove it too low.
 - `vote_conflict`: all sources disagree on a bar. Check `vote_results` for the
   per-source closes; the row is quarantined (never served) until sources agree.
 - `transport`: network flake. The circuit breaker opens after 3 consecutive
@@ -30,22 +38,30 @@ A healthy night: every job `ok` / `skipped_already_done` / `skipped_source_down`
 
 ## Restore from scratch (the DuckDB file is disposable)
 
-The Parquet stores are the system of record (`C:\argus-data\landing`, `\events`;
-mirrored nightly to `C:\argus-data\backup` by j15). To restore:
+The Parquet stores are the system of record (`D:\argus-data\landing`, `\events`;
+mirrored nightly to `D:\argus-data\backup` by j15). To restore:
 
 ```powershell
 # if the data volume died: copy backup\landing + backup\events back first
-Remove-Item C:\argus-data\argus.duckdb
-C:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + republish
+Remove-Item D:\argus-data\argus.duckdb
+D:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + republish
 ```
 
 ## Scheduler
 
 - "ARGUS Nightly" (23:45 local, missed-run recovery, wake-to-run) MUST have the
   repo as its working directory — `scripts\register_scheduled_tasks.ps1` sets it.
-- "ARGUS Catch-up" (at logon) needs an elevated shell to register.
+- "ARGUS Catch-up" (at logon) registers as a **per-user** task; no elevated
+  shell needed. Its trigger is scoped to the current user on purpose — a bare
+  `-AtLogOn` is an *any-user* task, which needs elevation and otherwise fails
+  with `Access is denied`, leaving Nightly registered and Catch-up missing.
 - Double-fire is harmless: jobs are idempotent per trade date and a concurrent
   instance bows out on the DuckDB lock.
+- Check both are actually there (only Nightly present = the failure above):
+
+```powershell
+Get-ScheduledTask | Where-Object TaskName -like "ARGUS*" | Select-Object TaskName, State
+```
 
 ## Known source states
 
@@ -65,8 +81,32 @@ C:\argus-data\venv\Scripts\argus rebuild --yes    # deterministic replay + repub
   ledger carries the worst divergence. Sustained breaches = demote the source
   in the voting priority (quality/voting.py `_PRIORITY`).
 
+## Adding / removing tickers
+
+Edit `config/universe.yaml`. Nothing else — no re-bootstrap, no wipe:
+
+- **Added**: `j02c_yf_backfill` spots it on the next night and pulls its full
+  deep history once (1 call). Tickers that already have history are never
+  re-fetched or rewritten.
+- **Removed**: stops accruing; history is kept.
+- Use the dotted form for share classes (`BRK.B`) — adapters re-spell per
+  vendor (Yahoo wants `BRK-B`, Alpaca rejects it).
+- Confirm a new name landed: `argus status` (j02c `rows_out` = names added).
+
+Do NOT paste the universe into `watchlist.yaml` — that drives intraday tick
+capture at 120-340 calls per ticker per session (~1 GB/session for 110 names)
+and will exhaust the Alpaca budget. Keep the watchlist a curated subset.
+
+Budgets are sized against universe size (`polygon` 200, `edgar` 250 = 1 call
+per ticker). Growing the universe past ~200 names means raising those too, or
+`j06`/`j07b` will silently cover only the first N.
+
 ## Key rotation / adding keys
 
 Edit `.env`, then `argus check`. No restart needed — every run re-reads it.
 After adding the Polygon key for the first time: `argus bootstrap` (one-off
 10y spine; refuses to run without the split feed, ~8 minutes of drip).
+
+Note: an `ARGUS_*` env var in `.env` **overrides** the code default, so a
+budget pinned there keeps its old ceiling after an upgrade. If a job exhausts
+unexpectedly after a version bump, check `.env` first.

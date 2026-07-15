@@ -35,16 +35,19 @@ Downloader = Callable[[str, date], Any]  # returns a pandas DataFrame (possibly 
 def _default_downloader(ticker: str, session: date) -> Any:
     import yfinance as yf  # deferred: keeps import cost/network surface out of tests
 
-    return yf.download(
-        ticker,
-        start=session.isoformat(),
-        end=(session + timedelta(days=1)).isoformat(),
-        interval="1m",
-        auto_adjust=False,
-        prepost=False,
-        progress=False,
-        threads=False,
-    )
+    from argus.sources._yf import quiet_vendor_deprecations, yahoo_symbol
+
+    with quiet_vendor_deprecations():
+        return yf.download(
+            yahoo_symbol(ticker),
+            start=session.isoformat(),
+            end=(session + timedelta(days=1)).isoformat(),
+            interval="1m",
+            auto_adjust=False,
+            prepost=False,
+            progress=False,
+            threads=False,
+        )
 
 
 def _to_parquet_bytes(df: Any) -> bytes:

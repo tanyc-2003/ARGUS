@@ -49,26 +49,54 @@ free sources ─▶ L0 landing ─▶ L2 events ─▶ vote + SCD-2 ─▶ canon
 ## Quick start (Windows)
 
 ```powershell
-# 1. venv OUTSIDE any cloud-synced folder (the repo may be synced; runtime artifacts must not be)
-py -3.14 -m venv C:\argus-data\venv
-C:\argus-data\venv\Scripts\pip install -e ".[dev]"
+# 1. configure (blank keys mean a job SKIPS, it does not fail)
+copy .env.example .env    # then fill in your API keys
 
-# 2. configure (blank keys mean a job SKIPS, it does not fail)
-copy .env.example .env
+# 2. one-shot setup: pick where the data lives, create the venv, install, init the DB
+.\scripts\setup_argus.bat            # prompts for a data root, e.g. D:\argus-data
+.\scripts\setup_argus.bat D:\argus-data   # or pass it non-interactively
 
-# 3. sanity check, build the DB, lay the deep-history spine, run a night
-C:\argus-data\venv\Scripts\argus check
-C:\argus-data\venv\Scripts\argus init-db
-C:\argus-data\venv\Scripts\argus bootstrap    # one-off; requires the Polygon key
-C:\argus-data\venv\Scripts\argus nightly
-
-# 4. schedule it (daily 23:45 local + at logon; idempotent per trade date)
-.\scripts\register_scheduled_tasks.ps1 -ArgusExe C:\argus-data\venv\Scripts\argus.exe
+# 3. schedule it (daily 23:45 local + at logon; idempotent per trade date)
+.\scripts\register_scheduled_tasks.ps1 -ArgusExe D:\argus-data\venv\Scripts\argus.exe
 ```
 
-All data lands under `ARGUS_DATA_ROOT` (default `C:\argus-data`) — startup **refuses** a
-OneDrive/Dropbox path, because Parquet + DuckDB under a sync client risks corruption. The repo
-carries code only; `.gitignore` blocks `*.duckdb`.
+`setup_argus.bat` writes your chosen location into `.env` as `ARGUS_DATA_ROOT` (leaving your
+keys untouched), creates the venv under it, installs the package with its `[dev]` extras, runs
+`init-db`, and offers the one-off `argus bootstrap` if a Polygon key is present. It is safe to
+re-run: an existing venv is reused, `init-db` only applies missing migrations, and it warns
+before repointing `.env` at a different data root.
+
+<details>
+<summary>Manual setup, if you prefer</summary>
+
+```powershell
+py -3.14 -m venv D:\argus-data\venv          # OUTSIDE any cloud-synced folder
+D:\argus-data\venv\Scripts\pip install -e ".[dev]"
+copy .env.example .env                        # set ARGUS_DATA_ROOT=D:\argus-data
+D:\argus-data\venv\Scripts\argus check
+D:\argus-data\venv\Scripts\argus init-db
+D:\argus-data\venv\Scripts\argus bootstrap    # one-off; requires the Polygon key
+D:\argus-data\venv\Scripts\argus nightly
+```
+</details>
+
+All data lands under `ARGUS_DATA_ROOT` (code default `C:\argus-data`; the setup script lets you
+put it on any local disk) — startup **refuses** a OneDrive/Dropbox path, because Parquet + DuckDB
+under a sync client risks corruption. The repo carries code only; `.gitignore` blocks `*.duckdb`.
+
+## Choosing what it tracks
+
+Edit **[`config/universe.yaml`](config/universe.yaml)** — the daily spine. It ships with **10
+macro-factor ETFs + 102 S&P 100 constituents**, and it is the one file to change:
+
+- **Add a ticker** → the next nightly detects it and pulls its **full deep history** once
+  (`j02c_yf_backfill`). Existing tickers are never re-fetched or rewritten.
+- **Remove a ticker** → it stops accruing; its history is kept.
+- No re-bootstrap, no wipe. Editing before first setup works the same way.
+
+**[`config/watchlist.yaml`](config/watchlist.yaml)** is a separate, deliberately small subset —
+the names harvested *intraday* (minute bars + IEX quotes). It costs ~120–340 API calls **per
+ticker per session**, so keep it curated; the universe costs ~1 call per ticker per night.
 
 ## Reading the data
 
@@ -76,7 +104,7 @@ Point a read-only DuckDB connection at the sealed serving database:
 
 ```python
 import duckdb
-con = duckdb.connect("C:/argus-data/argus_serving.duckdb", read_only=True)
+con = duckdb.connect("D:/argus-data/argus_serving.duckdb", read_only=True)  # your ARGUS_DATA_ROOT
 con.execute("SELECT * FROM vw_mad_daily_ohlcv WHERE ticker = 'AAPL' ORDER BY effective_date").pl()
 con.execute("SELECT gap_key, metric, severity FROM gap_ledger").pl()   # what the free data can't buy
 ```
