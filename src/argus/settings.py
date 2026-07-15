@@ -40,7 +40,15 @@ class Settings(BaseSettings):
     # nightly per-source call budgets (calls per run); buckets enforce the per-second rate
     polygon_nightly_budget: int = 120
     yfinance_nightly_budget: int = 600
-    alpaca_nightly_budget: int = 2000
+    # Alpaca quote ticks paginate at 10k/call, so one liquid name costs 230-300
+    # calls for a busy session (measured 2026-07: QQQ 2.95M quotes = 295 calls,
+    # SPY 2.27M = 228). One session across the 15-name watchlist is ~2-2.5k; the
+    # 5-session backfill is ~10-12k. The old 2000 could not even cover a single
+    # session, so the job died a third of the way through the watchlist EVERY
+    # night and the tail never got data. A CEILING, not a target: a steady-state
+    # night spends ~2.5k (~14 min at 3 calls/s); only a full backfill approaches
+    # this, and capture() stops cleanly rather than half-fetching when it binds.
+    alpaca_nightly_budget: int = 15_000
 
     @field_validator("data_root")
     @classmethod

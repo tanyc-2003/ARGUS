@@ -17,20 +17,37 @@ from argus.config_files import load_watchlist
 from argus.core import calendars
 from argus.core.clocks import pull_knowledge_time
 from argus.landing import store
-from argus.ops import health
-from argus.ops.errors import SchemaDrift, SourceDown, TransportFailure
+from argus.ops import dlq, health
+from argus.ops.errors import (
+    BudgetExhausted,
+    ErrorClass,
+    PayloadTooLarge,
+    SchemaDrift,
+    SourceDown,
+    TransportFailure,
+)
 from argus.ops.http import FetchClient
 from argus.ops.jobs import JobContext, JobResult
 from argus.ops.ratelimit import RunBudget, alpaca_bucket
 
 SOURCE = "alpaca_iex"
+QUOTES_JOB = "j05_alpaca_quotes"  # registry name; used for the DLQ entries below
 DATASET = "quote_ticks"
 DAILY_DATASET = "alpaca_daily"
 BASE_URL = "https://data.alpaca.markets/v2/stocks"
 LOOKBACK_SESSIONS = 5  # gap recovery after missed nights
 DAILY_LOOKBACK_DAYS = 12  # matches the yfinance revision window
 PAGE_LIMIT = 10_000
-MAX_PAGES_PER_SESSION = 200  # hard stop ≈ 2M quotes; far above any IEX single-name day
+# Runaway guard ONLY — it must sit far above a real session, never near it.
+# Measured IEX single-name days (2026-07, quiet -> busy):
+#     HYG 0.05M (5p)   TLT 0.27M (28p)   IWD 0.91M (91p)
+#     SPY 1.48-2.27M (149-228p)          QQQ 1.13-2.95M (113-295p)
+# A busy day is ~2.6x the same name's quiet day, so sizing off quiet days is how
+# the old cap of 200 (~2M) ended up BELOW real volume: busy sessions blew through
+# it, spent 200 calls and landed nothing — permanently unfetchable, every night.
+# 800 pages (~8M quotes) is ~2.7x the observed peak (QQQ 2.95M), leaving room for
+# a genuinely wild session while still terminating a runaway pagination loop.
+MAX_PAGES_PER_SESSION = 800
 
 
 def _fetch_session_quotes(
@@ -56,8 +73,9 @@ def _fetch_session_quotes(
         page_token = payload.get("next_page_token")
         if not page_token:
             return quotes
-    raise SchemaDrift(
-        f"{SOURCE}: {ticker} {session.session_date} exceeded {MAX_PAGES_PER_SESSION} pages",
+    raise PayloadTooLarge(
+        f"{SOURCE}: {ticker} {session.session_date} exceeded {MAX_PAGES_PER_SESSION} pages "
+        f"({len(quotes):,} quotes fetched before the cap)",
         source=SOURCE,
     )
 
@@ -80,33 +98,71 @@ def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
     client = _authed_client(ctx, client, budget)
 
     watchlist = load_watchlist(ctx.settings)
-    session_dates = calendars.previous_sessions(ctx.trade_date, LOOKBACK_SESSIONS)
+    # previous_sessions() is ascending (oldest first); walk it newest-first so the
+    # most recent session is captured for EVERY ticker before any backfill runs.
+    session_dates = list(reversed(calendars.previous_sessions(ctx.trade_date, LOOKBACK_SESSIONS)))
 
     landed = 0
     skipped = 0
+    oversized = 0
     drifted = 0
     last_drift: SchemaDrift | None = None
     try:
-        for ticker in watchlist:
-            for session_date in session_dates:
+        # session-major, NOT ticker-major: with `for ticker: for session:` an early,
+        # expensive name (SPY ~170 calls/session) drained the budget and the tail of
+        # the watchlist was starved every single night, deterministically. Iterating
+        # sessions outermost means a short budget drops the OLDEST backfill instead.
+        for session_date in session_dates:
+            session = calendars.session_info(session_date)
+            if session is None:  # defensive; previous_sessions only yields sessions
+                continue
+            for ticker in watchlist:
                 request_key = f"{ticker}:{session_date.isoformat()}"
                 if store.ensure(ctx.conn, DATASET, SOURCE, request_key) is not None:
                     skipped += 1
                     continue
-                session = calendars.session_info(session_date)
-                if session is None:  # defensive; previous_sessions only yields sessions
+                if dlq.has_open(
+                    ctx.conn, source=SOURCE, request_key=request_key,
+                    error_class=ErrorClass.SOURCE_OVERSIZED,
+                ):
+                    # known too big: it cost its calls once, never pay again.
+                    # `argus dlq-resolve <id>` re-arms it after the cap is raised.
+                    oversized += 1
                     continue
+                # Never start a fetch we cannot afford to finish. The payload lands
+                # atomically, so a run cut off mid-pagination spends every call and
+                # writes nothing — that partial-fetch waste is what exhausted the
+                # budget. Reserving the worst case makes any started fetch completable.
+                if budget.remaining < MAX_PAGES_PER_SESSION:
+                    raise BudgetExhausted(
+                        f"{SOURCE}: {budget.remaining} calls left, below the "
+                        f"{MAX_PAGES_PER_SESSION}-page reserve needed to complete a session",
+                        source=SOURCE,
+                    )
                 try:
                     quotes = _fetch_session_quotes(client, ticker, session)
+                except PayloadTooLarge as exc:
+                    # Permanent for this pair until the cap changes. Record it ONCE so
+                    # it is visible in `argus dlq-list` and never re-fetched; otherwise
+                    # it burns MAX_PAGES_PER_SESSION calls every night, forever.
+                    oversized += 1
+                    dlq.push(
+                        ctx.conn, job_name=QUOTES_JOB, error_class=exc.error_class,
+                        detail=str(exc), source=SOURCE, request_key=request_key,
+                    )
+                    ctx.log.warning(
+                        "alpaca_quotes_oversized", ticker=ticker,
+                        session=session_date.isoformat(), detail=str(exc),
+                    )
+                    continue
                 except SchemaDrift as exc:
-                    # one ticker/session blowing past the page cap (SPY's IEX quote
-                    # volume routinely does) must not kill every other ticker in the
-                    # watchlist — count it and move on, matching stooq.capture's
-                    # per-ticker containment; systemic drift still fails loudly below
+                    # a genuinely malformed response for one pair must not kill the
+                    # rest of the watchlist; systemic drift still fails loudly below
                     drifted += 1
                     last_drift = exc
                     ctx.log.warning(
-                        "alpaca_quotes_drifted", ticker=ticker, session=session_date.isoformat()
+                        "alpaca_quotes_drifted", ticker=ticker,
+                        session=session_date.isoformat(), detail=str(exc),
                     )
                     continue
                 body = {
@@ -135,7 +191,7 @@ def capture(ctx: JobContext, client: FetchClient | None = None) -> JobResult:
     health.record_success(ctx.conn, SOURCE)
     return JobResult(
         rows_out=landed, budget_used=budget.used,
-        detail=f"landed={landed} already={skipped} drifted={drifted}",
+        detail=f"landed={landed} already={skipped} oversized={oversized} drifted={drifted}",
     )
 
 
