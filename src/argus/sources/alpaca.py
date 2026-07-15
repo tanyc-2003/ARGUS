@@ -41,12 +41,14 @@ PAGE_LIMIT = 10_000
 # Runaway guard ONLY — it must sit far above a real session, never near it.
 # Measured IEX single-name days (2026-07, quiet -> busy):
 #     HYG 0.05M (5p)   TLT 0.27M (28p)   IWD 0.91M (91p)
-#     SPY 1.48-2.27M (149-228p)          QQQ 1.13-2.95M (113-295p)
-# A busy day is ~2.6x the same name's quiet day, so sizing off quiet days is how
-# the old cap of 200 (~2M) ended up BELOW real volume: busy sessions blew through
-# it, spent 200 calls and landed nothing — permanently unfetchable, every night.
-# 800 pages (~8M quotes) is ~2.7x the observed peak (QQQ 2.95M), leaving room for
-# a genuinely wild session while still terminating a runaway pagination loop.
+#     SPY 1.48-2.27M (149-228p)          QQQ 1.13-3.38M (113-339p)
+# Sizing this off "observed" volume is a trap, and it is exactly how the old cap
+# of 200 (~2M) ended up BELOW real volume: a cap that is too low hides the very
+# days that would prove it too low (they never land), so the sample only ever
+# contains quiet days. Each time the cap rose, the observed peak rose with it —
+# 171 -> 295 -> 339 pages. Hence a deliberately fat margin, not a tight fit:
+# 800 pages (~8M quotes) is ~2.4x the observed peak (QQQ 3.38M on 2026-07-14),
+# leaving room for a genuinely wild session while still ending a runaway loop.
 MAX_PAGES_PER_SESSION = 800
 
 
