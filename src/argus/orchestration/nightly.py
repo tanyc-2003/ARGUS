@@ -31,7 +31,7 @@ def build_registry() -> list[JobSpec]:
         JobSpec("j02b_stooq_monthly", trust_jobs.stooq_monthly),  # monthly re-pull gate
         JobSpec("j03_alpaca_daily", alpaca.capture_daily_bars),
         JobSpec("j04_yf_minute", yf_minute.capture),
-        JobSpec("j05_alpaca_quotes", alpaca.capture),
+        JobSpec(alpaca.QUOTES_JOB, alpaca.capture),
         JobSpec("j06_polygon_ca", polygon_ref.capture_corporate_actions),
         JobSpec("j07_polygon_delisted", polygon_ref.capture_delisted),
         JobSpec("j07b_edgar", edgar.capture),

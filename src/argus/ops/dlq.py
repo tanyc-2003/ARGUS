@@ -31,6 +31,27 @@ def push(
     )
 
 
+def has_open(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    source: str,
+    request_key: str,
+    error_class: ErrorClass | None = None,
+) -> bool:
+    """Is there an unresolved DLQ entry for this exact request_key?
+
+    Jobs use this to suppress work that is known to be permanently doomed, so a
+    failure costs its calls ONCE rather than every night forever. `dlq-resolve`
+    clears the entry and re-arms the fetch.
+    """
+    sql = "SELECT 1 FROM dead_letter WHERE resolved_at IS NULL AND source = ? AND request_key = ?"
+    params: list[Any] = [source, request_key]
+    if error_class is not None:
+        sql += " AND error_class = ?"
+        params.append(str(error_class))
+    return conn.execute(sql + " LIMIT 1", params).fetchone() is not None
+
+
 def list_open(conn: duckdb.DuckDBPyConnection, limit: int = 50) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
