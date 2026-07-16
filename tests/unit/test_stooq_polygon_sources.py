@@ -77,6 +77,60 @@ def test_stooq_partial_drift_lands_the_good_tickers(ctx) -> None:
     assert "drifted=1" in result.detail
 
 
+def _wide_universe(ctx, n: int) -> None:  # type: ignore[no-untyped-def]
+    """A universe big enough to tell 'a few bad tickers' from 'the source is down'."""
+    (ctx.settings.config_dir / "universe.yaml").write_text(
+        "tickers:\n" + "".join(f"  - {{ticker: T{i:02d}, role: sp100}}\n" for i in range(n)),
+        encoding="utf-8",
+    )
+
+
+def test_stooq_systemic_block_bails_before_walking_the_universe(ctx) -> None:
+    """Stooq's block page answers identically for every ticker. Once it is clearly
+    the SOURCE that is down, stop buying the same verdict once per remaining name
+    (a 112-name universe burned 112 calls / ~4 min per probe doing exactly that)."""
+    _wide_universe(ctx, 40)
+    seen: list[str] = []
+
+    def handler(r: httpx.Request) -> httpx.Response:
+        seen.append(r.url.params["s"])
+        return httpx.Response(200, text='<!DOCTYPE html><html><head><meta charset="utf-8">')
+
+    with pytest.raises(SchemaDrift):
+        stooq.capture(ctx, client=_fc(handler))
+
+    assert len(seen) == stooq.SYSTEMIC_DRIFT_AFTER  # 5 calls, not 40
+
+
+def test_stooq_isolated_drift_does_not_look_systemic(ctx) -> None:
+    """Containment must still apply when only some tickers are bad: anything
+    succeeding proves the source is up, so the rest are still worth fetching."""
+    _wide_universe(ctx, 12)
+    seen: list[str] = []
+
+    def handler(r: httpx.Request) -> httpx.Response:
+        s = r.url.params["s"]
+        seen.append(s)
+        return httpx.Response(200, text=STOOQ_CSV if s.startswith("t00") else "<html>x</html>")
+
+    result = stooq.capture(ctx, client=_fc(handler))
+
+    assert len(seen) == 12  # walked everything — no early bail
+    assert result.rows_out == 1  # the good one still landed
+    assert "drifted=11" in result.detail
+
+
+def test_stooq_systemic_bail_still_fails_the_job_and_trips_health(ctx) -> None:
+    """Bailing early must not turn a failure into a quiet success."""
+    _wide_universe(ctx, 40)
+    with pytest.raises(SchemaDrift):
+        stooq.capture(ctx, client=_fc(lambda r: httpx.Response(200, text="<html>blocked</html>")))
+    row = ctx.conn.execute(
+        "SELECT consecutive_failures FROM source_health WHERE source = 'stooq'"
+    ).fetchone()
+    assert row is not None and row[0] >= 1
+
+
 def test_stooq_total_drift_fails_loudly(ctx) -> None:
     with pytest.raises(SchemaDrift):
         stooq.capture(ctx, client=_fc(lambda r: httpx.Response(200, text="<html>limit</html>")))

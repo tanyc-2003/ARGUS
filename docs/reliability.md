@@ -95,6 +95,27 @@ a ticker whose corporate actions never land has no canonicalized splits, so the 
 run and its prices would be served split-adjusted-as-raw — the exact risk `bootstrap` refuses to
 take when the Polygon key is missing.
 
+### Containment is for isolated failures, not systemic ones
+
+Per-item containment — catch, count, carry on — is right when *one* item is bad. It is wrong
+when the **source** is bad, because every remaining item returns the same answer and each one
+costs a call to hear it again. Stooq's block page did exactly this: ticker #1 revealed the block,
+and a 112-name universe then spent 112 calls / ~3m43s per probe rediscovering it.
+
+So a capture that contains per-item must also decide when the verdict is already in.
+`stooq.capture` bails after `SYSTEMIC_DRIFT_AFTER` drifts with *nothing* having succeeded, using
+the **same predicate** as the post-loop failure check (`_is_systemic`) so "systemic" cannot come
+to mean two different things. The failure is unchanged — same DLQ entry, same circuit-breaker
+failure — it is only reached without paying for the rest of the universe first.
+
+The tradeoff is deliberate: if the first N tickers all fail and a later one would have
+succeeded, that name is skipped this run. Consecutive total failures with zero successes are
+overwhelmingly a dead source, and the next run re-probes anyway.
+
+Note the shape is the same mistake as the 2026-07 alpaca starvation, and the cost per contained
+failure is what decides whether it hurts: 1 call in stooq's original 15-name universe, 200 in
+alpaca. **Containment scales with the list — so it must be bounded by evidence, not by length.**
+
 ### Fair ordering under a short budget
 
 Any loop over (name × session) must iterate **session-major, newest first**. Ticker-major order

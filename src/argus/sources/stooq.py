@@ -25,9 +25,24 @@ DATASET = "stooq_daily"
 URL = "https://stooq.com/q/d/l/"
 _EXPECTED_HEADER = "Date,Open,High,Low,Close"
 
+# How many drifts, with nothing else having succeeded, before we call it systemic.
+# Per-ticker containment is for an ISOLATED bad response; when the source itself is
+# down every ticker gets the same answer, so walking the rest only buys the verdict
+# again at one call each. Stooq's block page did exactly that: a 112-name universe
+# burned 112 calls / ~3m43s per probe to rediscover what ticker #1 already said
+# (2026-07). Small enough to stay cheap, large enough that a handful of genuinely
+# odd symbols cannot trip it.
+SYSTEMIC_DRIFT_AFTER = 5
+
 
 def stooq_bucket(**kw: object) -> TokenBucket:
     return TokenBucket(rate_per_sec=0.5, capacity=1, **kw)  # type: ignore[arg-type]
+
+
+def _is_systemic(drifted: int, landed: int, skipped: int, no_data: int) -> bool:
+    """Is every response so far bad? Shared by the in-loop bail and the post-loop
+    failure check, so 'systemic' can never mean two different things."""
+    return drifted >= SYSTEMIC_DRIFT_AFTER and landed == 0 and skipped == 0 and no_data == 0
 
 
 def _validate(ticker: str, text: str) -> None:
@@ -78,6 +93,11 @@ def capture(
                 drifted += 1
                 last_drift = exc
                 ctx.log.warning("stooq_drifted_response", ticker=ticker)
+                if _is_systemic(drifted, landed, skipped, no_data):
+                    # Same predicate the post-loop check uses — the verdict is in,
+                    # so stop buying it again once per remaining ticker.
+                    ctx.log.warning("stooq_systemic_drift", checked=drifted)
+                    break
                 continue
             store.write(
                 ctx.conn, ctx.settings,

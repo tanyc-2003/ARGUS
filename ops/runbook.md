@@ -71,6 +71,12 @@ Get-ScheduledTask | Where-Object TaskName -like "ARGUS*" | Select-Object TaskNam
   spine runs on yfinance (+ Alpaca once keys land); the bootstrap uses
   yfinance deep history (`b01_yf_history`). `j02b_stooq_monthly` probes weekly
   with failure backoff and heals automatically if Stooq reopens.
+  A probe costs `SYSTEMIC_DRIFT_AFTER` (5) calls, not one per universe ticker:
+  once several tickers drift with nothing succeeding, it is the source that is
+  down, so the job stops rather than re-confirming it 100+ more times. Expect
+  one `source_schema_drift` DLQ entry per probe while it stays blocked — that
+  is the block being reported, not a new fault. Triage it only if the detail
+  stops being the HTML block page.
 
 ## Cadenced jobs
 
