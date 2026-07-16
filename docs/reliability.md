@@ -20,7 +20,7 @@ Each job gets its **own** `RunBudget`, so these are per-job ceilings, not a shar
 
 | Source | Budget | Sized against (measured 2026-07) |
 |---|---|---|
-| Polygon | 200 (`ARGUS_POLYGON_NIGHTLY_BUDGET`) | 1 call per universe ticker → 112 today; ~22 min at 5/min |
+| Polygon | 400 (`ARGUS_POLYGON_NIGHTLY_BUDGET`) | `j06` costs **`len(KINDS)` calls per ticker** — splits *and* dividends → 112 × 2 = **224 every night**; ~45 min at 5/min |
 | yfinance | 600 (`ARGUS_YFINANCE_NIGHTLY_BUDGET`) | `j02` 1/universe ticker; `j04` watchlist × ~16 sessions |
 | Alpaca | 15,000 (`ARGUS_ALPACA_NIGHTLY_BUDGET`) | quote ticks paginate: **120–340 calls per ticker per session**. A full 5-session backfill of 15 watchlist names measured **6,747 calls / 48 min**; a steady night ~1.4k |
 | EDGAR | 250 (constant) | 1 call per universe ticker still missing a sector |
@@ -85,6 +85,15 @@ Two sizing rules follow, both learned the hard way (see the 2026-07 starvation b
 - **Budgets must clear a full pass with room to grow.** A budget that cannot cover one complete
   sweep of the watchlist/universe does not degrade evenly — it starves whatever the loop reaches
   last, deterministically, every night.
+- **Count the calls per item, not the items.** The cost of a job is rarely "1 per ticker": `j06`
+  is one call per (ticker × KIND), quote capture is one per *page*. Both budgets have been set
+  wrong by assuming otherwise. `tests/unit/test_budget_sizing.py` pins each budget against the
+  **shipped** config so an undersized ceiling fails CI instead of silently truncating a night.
+
+For `j06_polygon_ca` an exhausted budget is a **correctness** failure, not just a coverage one:
+a ticker whose corporate actions never land has no canonicalized splits, so the reversal cannot
+run and its prices would be served split-adjusted-as-raw — the exact risk `bootstrap` refuses to
+take when the Polygon key is missing.
 
 ### Fair ordering under a short budget
 

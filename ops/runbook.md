@@ -97,9 +97,16 @@ Do NOT paste the universe into `watchlist.yaml` — that drives intraday tick
 capture at 120-340 calls per ticker per session (~1 GB/session for 110 names)
 and will exhaust the Alpaca budget. Keep the watchlist a curated subset.
 
-Budgets are sized against universe size (`polygon` 200, `edgar` 250 = 1 call
-per ticker). Growing the universe past ~200 names means raising those too, or
-`j06`/`j07b` will silently cover only the first N.
+Budgets are sized against universe size, but count the calls PER TICKER first:
+`j06_polygon_ca` is **2 calls per ticker** (splits + dividends), so 112 names =
+224 calls/night, budget 400. `j07b_edgar` is 1 per ticker missing a sector,
+budget 250. Growing the universe past ~200 names means raising `polygon` too —
+`tests/unit/test_budget_sizing.py` fails CI if a budget no longer clears the
+shipped config, so run the suite after editing `universe.yaml`.
+
+An exhausted `j06` is a **correctness** problem, not just missing rows: those
+tickers get no corporate actions, so their splits never canonicalize and the
+reversal cannot run for them.
 
 ## Key rotation / adding keys
 
